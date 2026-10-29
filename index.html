@@ -304,7 +304,7 @@
   .lock-box .ic { font-size: 44px; margin-bottom: 8px; }
   .lock-box h2 { font-size: 19px; margin: 0 0 4px; color: #fff; font-weight: 800; }
   .lock-box p { font-size: 13px; color: rgba(255,255,255,0.85); margin: 0 0 20px; }
-  .lock-box input { width: 100%; border: none; border-radius: 14px; padding: 15px; font-size: 16px; text-align: center; background: rgba(255,255,255,0.95); color: #3a2a20; margin-bottom: 12px; font-weight: 700; }
+  .lock-box input { -webkit-text-security: disc; width: 100%; border: none; border-radius: 14px; padding: 15px; font-size: 16px; text-align: center; background: rgba(255,255,255,0.95); color: #3a2a20; margin-bottom: 12px; font-weight: 700; }
   .lock-box .err-msg { color: #fff3c4; font-size: 13px; min-height: 18px; margin-bottom: 8px; font-weight: 700; }
   .lock-box .btn-primary { background: #fff; color: #147d86; }
 </style>
@@ -475,7 +475,7 @@
     <div class="ic">🦉</div>
     <h2>合言葉を入力してください</h2>
     <p>もふのーすのスタッフ専用です</p>
-    <input type="password" id="lockPinInput" placeholder="合言葉" autocomplete="off">
+    <input type="text" id="lockPinInput" placeholder="合言葉" autocomplete="off" autocapitalize="off" spellcheck="false">
     <div class="err-msg" id="lockErrMsg"></div>
     <button class="btn btn-primary" id="lockSubmitBtn">入る</button>
   </div>
@@ -1566,11 +1566,13 @@
     });
   });
   lockSubmitBtn.addEventListener("click", function(){
-    var pin = lockPinInput.value.trim();
+    // 半角カナ・全角英数の揺れをそろえる（ｻﾞﾉｰｽ → ザノース、ｍｏｆｕ → mofu）
+    var pin = lockPinInput.value.normalize("NFKC").trim();
     if (!pin) { lockErrMsg.textContent = "合言葉を入力してください"; return; }
     tryUnlock(pin);
   });
-  lockPinInput.addEventListener("keydown", function(e){ if (e.key === "Enter") lockSubmitBtn.click(); });
+  // 日本語変換の確定のEnterでは送信しない
+  lockPinInput.addEventListener("keydown", function(e){ if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) lockSubmitBtn.click(); });
   (async function init(){
     var saved = null;
     try { saved = localStorage.getItem(PIN_STORAGE_KEY); } catch (e) {}
