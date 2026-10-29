@@ -625,8 +625,15 @@
   var SUPABASE_URL = "https://qpgtgcttlfmfmxiuqqjn.supabase.co";
   var SUPABASE_KEY = "sb_publishable_NMFhqlx3A_QrAH5wkVYyag_iIVDcVy5";
   var PIN_STORAGE_KEY = "mofunosu-kaikei-pin";
+  // 通信ヘッダーには英数字しか入らないため、日本語などを含む合言葉は "hex:" + UTF-8の16進 に変換して送る
+  // （データベース側の mf_header_pin() で元に戻して照合する）
+  function pinHeader(pin){
+    pin = pin || "";
+    if (/^[\x20-\x7e]*$/.test(pin)) return pin;
+    return "hex:" + Array.from(new TextEncoder().encode(pin)).map(function(b){ return b.toString(16).padStart(2, "0"); }).join("");
+  }
   function makeClient(pin){
-    return window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { global: { headers: { "x-app-pin": pin || "" } } });
+    return window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { global: { headers: { "x-app-pin": pinHeader(pin) } } });
   }
   var sb = makeClient("");
 
@@ -1549,7 +1556,13 @@
       applyRole(res.data);
       sb = makeClient(pin);
       lockScreen.classList.add("hidden");
-      await startApp();
+      try { await startApp(); }
+      catch (e) {
+        console.warn(e);
+        lockScreen.classList.remove("hidden");
+        lockErrMsg.textContent = "データの読み込みに失敗しました。再読み込みしてもう一度お試しください。";
+        return false;
+      }
       return true;
     } finally { lockSubmitBtn.disabled = false; }
   }
