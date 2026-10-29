@@ -296,6 +296,8 @@
   .confirm-box p { font-size: 14px; color: var(--text-secondary); margin: 8px 0 18px; line-height: 1.6; }
   .confirm-box .row { display: flex; gap: 8px; }
 
+  body.role-staff [data-admin] { display: none !important; }
+  .role-badge { font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,0.25); color: #fff; }
   .lock-screen { position: fixed; inset: 0; z-index: 100; background: var(--brand-grad); display: flex; align-items: center; justify-content: center; padding: 24px; }
   .lock-screen.hidden { display: none; }
   .lock-box { width: 100%; max-width: 320px; text-align: center; }
@@ -310,7 +312,7 @@
 <body>
 <div id="app">
   <header class="topbar">
-    <h1><span class="sync-dot" id="syncDot"></span>🌲 もふのーす会計</h1>
+    <h1><span class="sync-dot" id="syncDot"></span>🌲 もふのーす会計 <span class="role-badge" id="roleBadge"></span></h1>
     <div class="day-pill"><span>営業日</span><input type="date" id="dayPicker"></div>
   </header>
 
@@ -334,13 +336,17 @@
         <input type="time" id="manualOut">
         <button class="btn btn-outline btn-sm" id="manualAddBtn">記録を手入力で追加</button>
       </div>
-      <h2 class="section-title">キャスト登録・時給</h2>
-      <div class="add-form">
-        <input type="text" id="newCastName" placeholder="キャスト名">
-        <input type="number" id="newCastWage" placeholder="時給" min="0" step="10">
-        <button class="btn btn-primary btn-sm" id="addCastBtn">登録</button>
+      <div data-admin>
+        <h2 class="section-title">キャスト登録・時給（管理者のみ）</h2>
+        <div class="add-form">
+          <input type="text" id="newCastName" placeholder="キャスト名">
+          <input type="number" id="newCastWage" placeholder="時給" min="0" step="10">
+          <button class="btn btn-primary btn-sm" id="addCastBtn">登録</button>
+        </div>
+        <div id="castEditList"></div>
       </div>
-      <div id="castEditList"></div>
+      <h2 class="section-title">ログイン中：<span id="roleLabel"></span></h2>
+      <button class="btn btn-outline" id="logoutBtn">ログアウト（合言葉を入れ直す）</button>
     </section>
 
     <!-- メニュー -->
@@ -402,7 +408,7 @@
     <button class="tab-btn" data-screen="screen-attendance"><span class="ic">⏰</span>出勤</button>
     <button class="tab-btn" data-screen="screen-menu"><span class="ic">📋</span>メニュー</button>
     <button class="tab-btn" data-screen="screen-purchase"><span class="ic">🧾</span>仕入れ</button>
-    <button class="tab-btn" data-screen="screen-summary"><span class="ic">📊</span>集計</button>
+    <button class="tab-btn" data-screen="screen-summary" data-admin><span class="ic">📊</span>集計</button>
   </nav>
 </div>
 
@@ -668,6 +674,8 @@
   var activeOrderId = null;
   var pendingPayMethod = null;
   var confirmCallback = null;
+  var role = "staff";
+  function isAdmin(){ return role === "admin"; }
 
   function castById(id){ return casts.find(function(c){ return c.id === id; }); }
   function castName(id){ var c = castById(id); return c ? c.name : "（削除済み）"; }
@@ -697,7 +705,18 @@
     var res = await sb.from("mf_casts").select("*").order("sort").order("created_at");
     if (res.error) { console.warn(res.error); setSyncDot("err"); return; }
     casts = res.data || [];
+    casts.forEach(function(c){ c.hourly_wage = 0; });
+    if (isAdmin()) {
+      // 時給は管理者の合言葉でしか読めないテーブルに保存している
+      var w = await sb.from("mf_cast_wages").select("cast_id, hourly_wage");
+      if (w.error) { console.warn(w.error); toast("時給の取得に失敗しました"); }
+      (w.data || []).forEach(function(r){ var c = castById(r.cast_id); if (c) c.hourly_wage = r.hourly_wage; });
+    }
     renderAttendance();
+    if (currentScreen === "screen-summary") renderSummary();
+  }
+  function saveWage(castId, wage){
+    return sb.from("mf_cast_wages").upsert({ cast_id: castId, hourly_wage: wage, updated_at: new Date().toISOString() });
   }
   async function loadDay(day){
     var r = await Promise.all([
@@ -1181,7 +1200,11 @@
         '<span style="font-size:12px;font-weight:700;color:var(--text-muted)">時給</span><input type="number" data-f="wage" value="' + c.hourly_wage + '" min="0" step="10">' +
         '<button class="btn btn-outline btn-sm" data-act="toggle">' + (c.active ? "在籍中" : "退店済") + '</button>';
       row.querySelector('[data-f="name"]').addEventListener("change", async function(e){ await sb.from("mf_casts").update({ name: e.target.value || c.name }).eq("id", c.id); await loadCasts(); });
-      row.querySelector('[data-f="wage"]').addEventListener("change", async function(e){ await sb.from("mf_casts").update({ hourly_wage: Math.max(0, parseInt(e.target.value, 10) || 0) }).eq("id", c.id); await loadCasts(); toast("時給を更新しました"); });
+      row.querySelector('[data-f="wage"]').addEventListener("change", async function(e){
+        var r = await saveWage(c.id, Math.max(0, parseInt(e.target.value, 10) || 0));
+        if (r.error) { console.warn(r.error); toast("時給の更新に失敗しました"); } else toast("時給を更新しました");
+        await loadCasts();
+      });
       row.querySelector('[data-act="toggle"]').addEventListener("click", async function(){ await sb.from("mf_casts").update({ active: !c.active }).eq("id", c.id); await loadCasts(); });
       ce.appendChild(row);
     });
@@ -1199,8 +1222,10 @@
   document.getElementById("addCastBtn").addEventListener("click", async function(){
     var n = document.getElementById("newCastName"), w = document.getElementById("newCastWage");
     if (!n.value.trim()) { toast("キャスト名を入力してください"); return; }
-    var r = await sb.from("mf_casts").insert({ name: n.value.trim(), hourly_wage: Math.max(0, parseInt(w.value, 10) || 0), sort: casts.length });
-    if (r.error) { toast("登録に失敗しました"); return; }
+    var r = await sb.from("mf_casts").insert({ name: n.value.trim(), sort: casts.length }).select().single();
+    if (r.error) { console.warn(r.error); toast("登録に失敗しました"); return; }
+    var wr = await saveWage(r.data.id, Math.max(0, parseInt(w.value, 10) || 0));
+    if (wr.error) { console.warn(wr.error); toast("時給の保存に失敗しました"); }
     n.value = ""; w.value = "";
     await loadCasts(); toast("キャストを登録しました");
   });
@@ -1491,6 +1516,7 @@
     ["mf_orders", "mf_order_items", "mf_purchases", "mf_attendance"].forEach(function(t){ ch.on("postgres_changes", { event: "*", schema: "public", table: t }, scheduleReload); });
     ch.on("postgres_changes", { event: "*", schema: "public", table: "mf_menu_items" }, function(){ loadMenu(); });
     ch.on("postgres_changes", { event: "*", schema: "public", table: "mf_casts" }, function(){ loadCasts(); });
+    if (isAdmin()) ch.on("postgres_changes", { event: "*", schema: "public", table: "mf_cast_wages" }, function(){ loadCasts(); });
     ch.subscribe(function(status){
       if (status === "SUBSCRIBED") setSyncDot("ok");
       else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") setSyncDot("err");
@@ -1516,16 +1542,29 @@
   async function tryUnlock(pin){
     lockSubmitBtn.disabled = true; lockErrMsg.textContent = "";
     try {
-      var res = await sb.rpc("mf_check_pin", { p_pin: pin });
+      var res = await sb.rpc("mf_check_role", { p_pin: pin });
       if (res.error) { lockErrMsg.textContent = "確認できませんでした。ネット接続をご確認ください。"; return false; }
       if (!res.data) { lockErrMsg.textContent = "合言葉が違います"; return false; }
       try { localStorage.setItem(PIN_STORAGE_KEY, pin); } catch (e) {}
+      applyRole(res.data);
       sb = makeClient(pin);
       lockScreen.classList.add("hidden");
       await startApp();
       return true;
     } finally { lockSubmitBtn.disabled = false; }
   }
+  function applyRole(r){
+    role = r === "admin" ? "admin" : "staff";
+    document.body.classList.toggle("role-staff", role === "staff");
+    document.getElementById("roleBadge").textContent = role === "admin" ? "管理者" : "スタッフ";
+    document.getElementById("roleLabel").textContent = role === "admin" ? "管理者（給与・集計も表示）" : "スタッフ（給与・集計は非表示）";
+  }
+  document.getElementById("logoutBtn").addEventListener("click", function(){
+    showConfirm("ログアウトして、合言葉の入力画面に戻りますか？", "ログアウト", function(){
+      try { localStorage.removeItem(PIN_STORAGE_KEY); } catch (e) {}
+      location.reload();
+    });
+  });
   lockSubmitBtn.addEventListener("click", function(){
     var pin = lockPinInput.value.trim();
     if (!pin) { lockErrMsg.textContent = "合言葉を入力してください"; return; }
