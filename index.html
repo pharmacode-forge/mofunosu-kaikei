@@ -138,8 +138,18 @@
   .sheet-handle { width: 40px; height: 4px; background: var(--gridline); border-radius: 999px; margin: 0 auto 12px; }
   .sheet-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
   .sheet-header-fields { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-  .sheet-header input.label-input { font-size: 19px; font-weight: 800; border: none; background: transparent; color: var(--text-primary); width: 100%; padding: 4px 0 0; }
-  .sheet-header input.customer-input { font-size: 13px; border: none; background: transparent; color: var(--text-secondary); width: 100%; padding: 0 0 4px; }
+  .sheet-header input.label-input { font-size: 20px; font-weight: 800; border: none; background: transparent; color: var(--text-primary); width: 100%; padding: 2px 0; }
+  .sheet-header input.customer-input {
+    font-size: 22px; font-weight: 800; color: var(--text-primary); width: 100%; margin-top: 2px;
+    border: 2px solid var(--gridline); border-radius: 12px; background: var(--surface-card); padding: 8px 12px;
+  }
+  .sheet-header input.customer-input::placeholder { color: var(--status-critical); font-weight: 700; opacity: .7; }
+  .sheet-header input.customer-input.missing { border-color: var(--status-critical); background: color-mix(in srgb, var(--status-critical) 8%, var(--surface-card)); }
+  .table-card .label { font-size: 17px; }
+  .table-card .label .cname { font-size: 20px; }
+  .table-card .tag-dohan { display: inline-block; font-size: 10.5px; font-weight: 800; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--series-4) 25%, transparent); color: var(--accent-brown); margin-left: 4px; vertical-align: middle; }
+  .back-adj { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 11px; font-weight: 800; color: var(--accent-brown); }
+  .back-adj input { width: 78px; border: 1px solid var(--gridline); border-radius: 8px; padding: 4px 6px; font-size: 13px; font-weight: 700; background: var(--surface-1); color: var(--text-primary); }
   .icon-btn {
     border: none; background: var(--surface-2); color: var(--text-secondary); width: 34px; height: 34px;
     border-radius: 999px; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;
@@ -167,6 +177,13 @@
   .ext-box .auto-tag { font-size: 11px; font-weight: 800; color: var(--status-good); }
   .ext-box .manual-tag { font-size: 11px; font-weight: 800; color: var(--accent-brown); }
   .link-btn { border: none; background: none; color: var(--series-1); font-weight: 800; font-size: 12px; cursor: pointer; padding: 4px; text-decoration: underline; }
+  .disc-box { background: color-mix(in srgb, var(--series-3) 9%, var(--surface-card)); border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
+  .disc-box .row { padding: 6px 0; }
+  .disc-box .row + .row { border-top: 1px dashed var(--gridline); }
+  .disc-box input[type=number] { border: 1px solid var(--gridline); border-radius: 8px; padding: 6px 8px; font-size: 15px; font-weight: 700; background: var(--surface-1); color: var(--text-primary); }
+  .qty-stepper button.pink { background: var(--series-3); }
+  .small-note { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+  .order-row.discount-line .name, .order-row.discount-line .line-total { color: var(--series-3); font-weight: 700; }
   .switch { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
   .switch input { opacity: 0; width: 0; height: 0; }
   .switch span { position: absolute; inset: 0; background: var(--gridline); border-radius: 999px; transition: .2s; cursor: pointer; }
@@ -351,6 +368,17 @@
 
     <!-- メニュー -->
     <section class="screen" id="screen-menu">
+      <div data-admin>
+        <h2 class="section-title">割引の設定（管理者のみ）</h2>
+        <p class="hint">お会計画面に出る割引の一覧です。「金額」は1回あたりの値引き額、「1時間無料」は飲み放題の最初の1時間分を人数分無料にします。どちらもTAX・サービス料をかける前に引きます。</p>
+        <div class="add-form">
+          <input type="text" id="newDiscName" placeholder="割引名（例: 3,000円OFF）">
+          <select id="newDiscKind"><option value="yen">金額を引く</option><option value="free_hour">1時間無料</option></select>
+          <input type="number" id="newDiscAmount" placeholder="金額" min="0" step="100">
+          <button class="btn btn-primary btn-sm" id="addDiscBtn">追加</button>
+        </div>
+        <div id="discEditList"></div>
+      </div>
       <h2 class="section-title">メニューを追加</h2>
       <p class="hint">バック区分：「％バック」は売価×20%（10万円超の日は30%）、「固定バック」は1本あたりの固定額を関わったキャストで分けます（選ばれたキャストが半分、残りを他のキャストで均等）。</p>
       <div class="add-form">
@@ -419,7 +447,7 @@
     <div class="sheet-header">
       <div class="sheet-header-fields">
         <input type="text" class="label-input" id="orderLabelInput" placeholder="卓番">
-        <input type="text" class="customer-input" id="orderCustomerInput" placeholder="お客様名（任意）">
+        <input type="text" class="customer-input" id="orderCustomerInput" placeholder="お客様名（必須）">
       </div>
       <button class="icon-btn" id="closeOrderSheet">✕</button>
     </div>
@@ -500,13 +528,17 @@
   var PLANS = {
     first_set:  { label: "初回もふもふセット", short: "初回セット", group: "初回", type: "set", price: 5000 },
     first_nomi: { label: "初回 飲み放題", short: "初回飲放", group: "初回", type: "nomi", early: 1500, late: 2000, ext: 1500 },
+    special:    { label: "特別初回セット", short: "特別初回", group: "初回", type: "special", price: 0 },
     neo_set:    { label: "ネオもふもふセット", short: "ネオセット", group: "通常", type: "set", price: 8000 },
     charge:     { label: "チャージ（時間無制限）", short: "チャージ", group: "通常", type: "charge", price: 2000 },
     nomi:       { label: "通常 飲み放題", short: "飲放", group: "通常", type: "nomi", early: 3000, late: 3500, ext: 1500 },
     none:       { label: "プランなし", short: "プランなし", group: "その他", type: "none", price: 0 }
   };
-  var PLAN_ORDER = ["first_set", "first_nomi", "neo_set", "charge", "nomi", "none"];
+  var PLAN_ORDER = ["first_set", "first_nomi", "special", "neo_set", "charge", "nomi", "none"];
   var UPGRADE = { base: 1000, ext: 500 };
+  var DOHAN_FEE = 3000;                  // 同伴料（1組あたり）
+  var DOHAN_BACK_RATE = 0.2;             // 同伴バックは常に20%（10万円超の日も変えない）
+  var FIRST_SET_AMU_FROM_MIN = 120;      // 初回もふもふセット: 入店2時間後から、1時間ごとにAmusementが必要
 
   function isLateEntry(date){
     var h = date.getHours();
@@ -528,6 +560,10 @@
     var info = { plan: plan, suggested: 0, extUsed: 0, late: false, elapsed: elapsedMinutes(order.entered_at, nowDate) };
     if (plan.type === "set" || plan.type === "charge") {
       lines.push({ name: plan.label + " × " + g + "名", amount: plan.price * g });
+    } else if (plan.type === "special") {
+      // 特別初回セット：名前と1人あたりの料金をその場で入力
+      var sp = Math.max(0, order.special_price || 0);
+      lines.push({ name: (order.special_name || plan.label) + " × " + g + "名", amount: sp * g });
     } else if (plan.type === "nomi") {
       var late = isLateEntry(new Date(order.entered_at));
       info.late = late;
@@ -541,15 +577,46 @@
         lines.push({ name: "飲み放題UpGrade 1h × " + g + "名", amount: UPGRADE.base * g });
         if (ext > 0) lines.push({ name: "UpGrade延長 × " + ext + "回 × " + g + "名", amount: UPGRADE.ext * ext * g });
       }
+      // 1時間無料：飲み放題の最初の1時間分（UpGrade料金は対象外）。人数を超えて無料にはしない
+      var freeLeft = g;
+      (order.discounts || []).forEach(function(d){
+        if (d.kind !== "free_hour" || !(d.qty > 0) || freeLeft <= 0) return;
+        var n = Math.min(freeLeft, d.qty);
+        freeLeft -= n;
+        lines.push({ name: "割引：" + d.name + " × " + n + "名", amount: -unit * n, discount: true });
+      });
     }
+    // 同伴料（TAX・サービス料の対象。10万円超の判定にも含まれる）
+    if (order.companion) lines.push({ name: "同伴料", amount: DOHAN_FEE });
+    // 金額の割引はTAX・サービス料の前の小計から引く（バックの計算には影響しない）
+    (order.discounts || []).forEach(function(d){
+      if (d.kind !== "yen" || !(d.qty > 0) || !(d.amount > 0)) return;
+      lines.push({ name: "割引：" + d.name + (d.qty > 1 ? " × " + d.qty : ""), amount: -d.amount * d.qty, discount: true });
+    });
+    var custom = Math.max(0, order.disc_custom || 0);
+    if (custom > 0) lines.push({ name: "割引：その他の値引き", amount: -custom, discount: true });
     return { lines: lines, info: info };
+  }
+  // 初回もふもふセット: 入店2時間後から、1時間ごとにAmusementが1つ以上必要（自動加算はせず、警告だけ）
+  // 2時間を過ぎてから注文されたAmusementを数え、始まった時間枠の数と比べる
+  function firstSetAmuStatus(order, nowDate, isAmusement){
+    var elapsed = elapsedMinutes(order.entered_at, nowDate);
+    if (order.plan !== "first_set" || elapsed < FIRST_SET_AMU_FROM_MIN) return { active: false, required: 0, count: 0, short: false };
+    var required = Math.floor((elapsed - FIRST_SET_AMU_FROM_MIN) / 60) + 1;
+    var from = new Date(order.entered_at).getTime() + FIRST_SET_AMU_FROM_MIN * 60000;
+    var count = (order.items || []).reduce(function(s, it){
+      var at = it.created_at ? new Date(it.created_at).getTime() : 0;
+      return s + (isAmusement(it) && at >= from ? it.qty : 0);
+    }, 0);
+    return { active: true, required: required, count: count, short: count < required };
   }
   function itemsSubtotal(items){
     return (items || []).reduce(function(s, it){ return s + it.price * it.qty; }, 0);
   }
+  // 値引き後の小計（税サ抜）。マイナスにはしない。10万円超の判定もこの金額で行う
   function orderSubtotal(order, nowDate){
     var p = planLines(order, nowDate);
-    return p.lines.reduce(function(s, l){ return s + l.amount; }, 0) + itemsSubtotal(order.items);
+    return Math.max(0, p.lines.reduce(function(s, l){ return s + l.amount; }, 0) + itemsSubtotal(order.items));
   }
   // 税サ込・100円切上
   function grandTotal(subtotal){
@@ -570,10 +637,12 @@
       (details[castId] = details[castId] || []).push({ name: label, amount: amount });
     }
     (items || []).forEach(function(it){
+      // back_override：手動で調整したバック額（この明細の合計額）。バック率は掛けない
+      var manual = (it.back_override != null && it.back_override >= 0);
       if (it.back_type === "rate") {
-        give(it.cast_id, it.price * it.qty * rate, it.name + " ×" + it.qty);
+        give(it.cast_id, manual ? it.back_override : it.price * it.qty * rate, it.back_label || (it.name + " ×" + it.qty + (manual ? "（手動）" : "")));
       } else if (it.back_type === "fixed") {
-        var total = (it.back_fixed || 0) * it.qty;
+        var total = manual ? it.back_override : (it.back_fixed || 0) * it.qty;
         var helpers = (it.helper_cast_ids || []).filter(function(h, i, arr){ return h && h !== it.cast_id && arr.indexOf(h) === i; });
         if (!it.cast_id) { unassigned += total; return; }
         if (helpers.length === 0) { give(it.cast_id, total, it.name + " ×" + it.qty); return; }
@@ -598,7 +667,11 @@
   function computeDayPayroll(casts, attendance, completedOrders, nowDate){
     var daySales = completedOrders.reduce(function(s, o){ return s + (o.subtotal || 0); }, 0);
     var allItems = [];
-    completedOrders.forEach(function(o){ allItems = allItems.concat(o.items || []); });
+    completedOrders.forEach(function(o){
+      allItems = allItems.concat(o.items || []);
+      // 同伴バック: 同伴料の20%を同伴したキャストに固定で（back_override なのでバック率30%の日も変わらない）
+      if (o.companion) allItems.push({ name: "同伴", price: DOHAN_FEE, qty: 1, back_type: "rate", cast_id: o.companion_cast_id || null, back_override: Math.round(DOHAN_FEE * DOHAN_BACK_RATE), back_label: "同伴（20%固定）" });
+    });
     var backs = computeBacks(allItems, daySales);
     var rows = [];
     casts.forEach(function(c){
@@ -673,7 +746,7 @@
   function setSyncDot(state){ document.getElementById("syncDot").className = "sync-dot" + (state ? " " + state : ""); }
 
   // ---------- 状態 ----------
-  var menu = [], casts = [];
+  var menu = [], casts = [], discounts = [];
   var dayData = { open: [], completed: [], purchases: [], attendance: [] };
   var currentDay = todayStr();
   var currentScreen = "screen-tables";
@@ -722,6 +795,65 @@
     renderAttendance();
     if (currentScreen === "screen-summary") renderSummary();
   }
+  async function loadDiscounts(){
+    var res = await sb.from("mf_discounts").select("*").order("sort").order("created_at");
+    if (res.error) { console.warn(res.error); setSyncDot("err"); return; }
+    discounts = res.data || [];
+    renderDiscEdit();
+    if (activeOrderId) renderOrderSheet();
+  }
+  function renderDiscEdit(){
+    var el = document.getElementById("discEditList");
+    if (!el) return;
+    el.innerHTML = "";
+    if (discounts.length === 0) { el.innerHTML = '<div class="empty-state">割引がありません</div>'; return; }
+    discounts.forEach(function(d){
+      var row = document.createElement("div");
+      row.className = "edit-row";
+      row.style.opacity = d.active ? "1" : ".5";
+      row.innerHTML =
+        '<input type="text" data-f="name" value="' + escapeHtml(d.name) + '">' +
+        '<select data-f="kind"><option value="yen">金額を引く</option><option value="free_hour">1時間無料</option></select>' +
+        (d.kind === "yen" ? '<span style="font-size:12px;font-weight:700;color:var(--text-muted)">¥</span><input type="number" data-f="amount" value="' + d.amount + '" min="0" step="100">' : '') +
+        '<button class="btn btn-outline btn-sm" data-act="toggle">' + (d.active ? "使用中" : "停止中") + '</button>' +
+        '<button class="icon-btn" data-act="del">🗑</button>';
+      row.querySelector('[data-f="kind"]').value = d.kind;
+      function upd(patch){
+        return sb.from("mf_discounts").update(patch).eq("id", d.id).then(function(r){
+          if (r.error) { console.warn(r.error); toast("保存に失敗しました"); } else toast("割引を更新しました");
+          return loadDiscounts();
+        });
+      }
+      row.querySelector('[data-f="name"]').addEventListener("change", function(e){ upd({ name: e.target.value.trim() || d.name }); });
+      row.querySelector('[data-f="kind"]').addEventListener("change", function(e){ upd({ kind: e.target.value, amount: e.target.value === "yen" ? (d.amount || 1000) : 0 }); });
+      var am = row.querySelector('[data-f="amount"]');
+      if (am) am.addEventListener("change", function(e){ upd({ amount: Math.max(0, parseInt(e.target.value, 10) || 0) }); });
+      row.querySelector('[data-act="toggle"]').addEventListener("click", function(){ upd({ active: !d.active }); });
+      row.querySelector('[data-act="del"]').addEventListener("click", function(){
+        showConfirm("割引「" + d.name + "」を削除しますか？（過去の会計の割引記録は残ります）", "削除する", async function(){
+          var r = await sb.from("mf_discounts").delete().eq("id", d.id);
+          if (r.error) toast("削除に失敗しました");
+          await loadDiscounts();
+        });
+      });
+      el.appendChild(row);
+    });
+  }
+  var newDiscKind = document.getElementById("newDiscKind");
+  newDiscKind.addEventListener("change", function(){ document.getElementById("newDiscAmount").style.display = newDiscKind.value === "yen" ? "" : "none"; });
+  document.getElementById("addDiscBtn").addEventListener("click", async function(){
+    var name = document.getElementById("newDiscName").value.trim();
+    var kind = newDiscKind.value;
+    var amount = parseInt(document.getElementById("newDiscAmount").value, 10);
+    if (!name) { toast("割引名を入力してください"); return; }
+    if (kind === "yen" && (isNaN(amount) || amount <= 0)) { toast("金額を入力してください"); return; }
+    var maxSort = discounts.reduce(function(s, d){ return Math.max(s, d.sort || 0); }, 0);
+    var r = await sb.from("mf_discounts").insert({ name: name, kind: kind, amount: kind === "yen" ? amount : 0, sort: maxSort + 1 });
+    if (r.error) { console.warn(r.error); toast("追加に失敗しました"); return; }
+    document.getElementById("newDiscName").value = ""; document.getElementById("newDiscAmount").value = "";
+    await loadDiscounts(); toast("割引を追加しました");
+  });
+
   function saveWage(castId, wage){
     return sb.from("mf_cast_wages").upsert({ cast_id: castId, hourly_wage: wage, updated_at: new Date().toISOString() });
   }
@@ -769,11 +901,12 @@
   });
 
   // ---------- 卓一覧 ----------
+  function isAmusementItem(it){
+    var m = menu.find(function(x){ return x.id === it.menu_item_id; });
+    return !!(m && m.category === "Amusement");
+  }
   function amusementCount(o){
-    return (o.items || []).reduce(function(s, it){
-      var m = menu.find(function(x){ return x.id === it.menu_item_id; });
-      return s + (m && m.category === "Amusement" ? it.qty : 0);
-    }, 0);
+    return (o.items || []).reduce(function(s, it){ return s + (isAmusementItem(it) ? it.qty : 0); }, 0);
   }
   function renderActiveTables(){
     var grid = document.getElementById("activeTablesGrid");
@@ -789,10 +922,14 @@
         var hours = Math.floor(p.info.elapsed / 60) + 1;
         if (amusementCount(o) < hours) warn = "Amusement " + amusementCount(o) + "/" + hours + "時間目";
       }
+      var fs = firstSetAmuStatus(o, now, isAmusementItem);
+      if (fs.short) warn = "アミュ未注文（" + fs.count + "/" + fs.required + "）";
       var card = document.createElement("div");
       card.className = "table-card";
       card.innerHTML =
-        '<div class="label">' + escapeHtml(orderLabel(o)) + '</div>' +
+        '<div class="label">' + escapeHtml(o.label || "") + ' ' +
+          (o.customer_name ? '<span class="cname">' + escapeHtml(o.customer_name) + '</span>' : '<span style="color:var(--status-critical);font-size:12px">名前未入力</span>') +
+          (o.companion ? '<span class="tag-dohan">同伴' + (o.companion_cast_id ? "・" + escapeHtml(castName(o.companion_cast_id)) : "") + '</span>' : '') + '</div>' +
         '<div class="meta">' + escapeHtml(p.info.plan.short) + ' ・ ' + (o.guests || 1) + '名 ・ ' + fmtTime(o.entered_at) + '〜（' + fmtHM(p.info.elapsed) + '）</div>' +
         (warn ? '<div class="warn">⚠ ' + escapeHtml(warn) + '</div>' : '') +
         '<div class="amount">' + fmtYen(grandTotal(sub)) + '</div>';
@@ -841,6 +978,7 @@
     if (!o) return;
     labelInput.value = o.label || "";
     customerInput.value = o.customer_name || "";
+    customerInput.classList.toggle("missing", !customerInput.value.trim());
     renderMenuPicker();
     renderOrderSheet();
     orderOverlay.classList.add("active");
@@ -849,7 +987,12 @@
   document.getElementById("closeOrderSheet").addEventListener("click", closeOrderSheet);
   orderOverlay.addEventListener("click", function(e){ if (e.target === orderOverlay) closeOrderSheet(); });
   labelInput.addEventListener("input", function(){ var o = findOrder(activeOrderId); if (!o) return; o.label = labelInput.value; debounceSave("label", o.id, { label: o.label }); });
-  customerInput.addEventListener("input", function(){ var o = findOrder(activeOrderId); if (!o) return; o.customer_name = customerInput.value; debounceSave("cust", o.id, { customer_name: o.customer_name }); });
+  customerInput.addEventListener("input", function(){
+    var o = findOrder(activeOrderId); if (!o) return;
+    o.customer_name = customerInput.value;
+    customerInput.classList.toggle("missing", !customerInput.value.trim());
+    debounceSave("cust", o.id, { customer_name: o.customer_name });
+  });
 
   function renderPlanCard(o){
     var now = new Date();
@@ -863,6 +1006,28 @@
       '<div class="row" style="display:block"><div class="rl" style="margin-bottom:6px">プラン</div><div class="chips">' + chips + '</div></div>' +
       '<div class="row"><span class="rl">人数</span><div class="qty-stepper"><button data-g="-1">−</button><span class="qty">' + (o.guests || 1) + '</span><button data-g="1">＋</button></div></div>' +
       '<div class="row"><span class="rl">入店時刻</span><span class="rv"><input type="time" id="enteredInput" value="' + fmtTime(o.entered_at) + '">　経過 ' + fmtHM(p.info.elapsed) + '</span></div>';
+    // 特別初回セット：内容（名前）と1人あたりの料金をその場で入力
+    if (p.info.plan.type === "special") {
+      html += '<div class="ext-box"><div class="guide">特別初回セットの内容と料金を入力してください</div>' +
+        '<div class="ctrl"><span class="rl">内容</span><input type="text" id="specialNameInput" value="' + escapeHtml(o.special_name || "") + '" placeholder="例: 特別初回（ボトル付き）" style="flex:1;min-width:0;border:1px solid var(--gridline);border-radius:8px;padding:6px 8px;font-size:14px;background:var(--surface-1);color:var(--text-primary)"></div>' +
+        '<div class="ctrl"><span class="rl">1人あたりの料金</span><span class="rv">¥ <input type="number" id="specialPriceInput" min="0" step="100" value="' + (o.special_price || "") + '" placeholder="0" style="width:96px;border:1px solid var(--gridline);border-radius:8px;padding:6px 8px;font-size:15px;font-weight:700;background:var(--surface-1);color:var(--text-primary)"></span></div></div>';
+    }
+    // 初回もふもふセット: 入店2時間後からのAmusement確認（警告のみ）
+    if (o.plan === "first_set") {
+      var fsx = firstSetAmuStatus(o, now, isAmusementItem);
+      var left = FIRST_SET_AMU_FROM_MIN - p.info.elapsed;
+      html += '<div class="ext-box"><div class="guide">初回もふもふセットは、入店2時間後から1時間ごとにAmusementのご注文が必要です。<br>' +
+        (fsx.active
+          ? '2時間後からのAmusement <b>' + fsx.count + '件</b> ／ 必要 <b>' + fsx.required + '件</b>' + (fsx.short ? '　<span style="color:var(--status-critical);font-weight:800">⚠ アミュ未注文</span>' : ' ✓')
+          : 'あと <b>' + Math.floor(left / 60) + '時間' + pad2(left % 60) + '分</b> で確認が始まります') + '</div></div>';
+    }
+    // 同伴
+    var compCast = o.companion_cast_id ? castName(o.companion_cast_id) : "";
+    html += '<div class="row"><span class="rl">同伴<br><span class="small-note">同伴料 ' + fmtYen(DOHAN_FEE) + '・同伴キャストにバック ' + fmtYen(Math.round(DOHAN_FEE * DOHAN_BACK_RATE)) + '（固定）</span></span><label class="switch"><input type="checkbox" id="companionInput"' + (o.companion ? " checked" : "") + '><span></span></label></div>';
+    if (o.companion) {
+      html += '<div class="row" style="display:block"><div class="rl" style="margin-bottom:6px">同伴したキャスト' + (compCast ? "" : '　<span style="color:var(--status-critical)">（選んでください）</span>') + '</div><div class="chips">' +
+        activeCasts().map(function(c){ return '<button class="chip' + (o.companion_cast_id === c.id ? " selected" : "") + '" data-comp="' + c.id + '">' + escapeHtml(c.name) + '</button>'; }).join("") + '</div></div>';
+    }
     if (p.info.plan.type === "nomi") {
       var manual = o.ext_count != null;
       var over = p.info.elapsed - NOMI_BASE_MINUTES;
@@ -881,12 +1046,45 @@
       var ac = amusementCount(o);
       html += '<div class="ext-box"><div class="guide">チャージは1時間ごとに1回以上Amusementのご注文が必要です。<br>現在 <b>' + hours + '時間目</b> ／ Amusement <b>' + ac + '件</b>' + (ac < hours ? '　<span style="color:var(--status-critical)">⚠ 不足</span>' : ' ✓') + '</div></div>';
     }
+    // 割引
+    var g = o.guests || 1;
+    html += '<div class="disc-box"><div class="rl" style="margin-bottom:4px">🏷 割引（TAX・サービス料の前に引きます）</div>';
+    // 割引の一覧（管理者が「メニュー」タブで編集）。使用中のものは、設定から外されても表示する
+    var applied = o.discounts || [];
+    var shown = discounts.filter(function(d){ return d.active; }).map(function(d){ return { id: d.id, name: d.name, kind: d.kind, amount: d.amount }; });
+    applied.forEach(function(a){ if (a.qty > 0 && !shown.some(function(s){ return s.id === a.id; })) shown.push(a); });
+    shown.forEach(function(d){
+      if (d.kind === "free_hour" && p.info.plan.type !== "nomi") return;
+      var cur = applied.find(function(a){ return a.id === d.id; });
+      var q = cur ? cur.qty : 0;
+      var label = escapeHtml(d.name) + (d.kind === "yen" ? '' : '<br><span class="small-note">飲み放題の最初の1時間・人数分</span>');
+      html += '<div class="row"><span class="rl">' + label + '</span><div class="qty-stepper"><button class="pink" data-disc="' + d.id + '" data-step="-1">−</button><span class="qty">' + q + (d.kind === "free_hour" ? "名" : "") + '</span><button class="pink" data-disc="' + d.id + '" data-step="1">＋</button></div></div>';
+    });
+    html += '<div class="row"><span class="rl">その他の値引き（金額を入力）</span><span class="rv">¥ <input type="number" id="discCustomInput" min="0" step="100" value="' + (o.disc_custom || "") + '" placeholder="0" style="width:90px"></span></div></div>';
     el.innerHTML = html;
+    el.querySelectorAll("[data-disc]").forEach(function(b){
+      b.addEventListener("click", function(){
+        var d = shown.find(function(x){ return x.id === b.dataset.disc; });
+        if (!d) return;
+        var list = (o.discounts || []).map(function(a){ return Object.assign({}, a); });
+        var cur = list.find(function(a){ return a.id === d.id; });
+        if (!cur) { cur = { id: d.id, name: d.name, kind: d.kind, amount: d.amount, qty: 0 }; list.push(cur); }
+        var max = d.kind === "free_hour" ? g : 99;
+        cur.qty = Math.min(max, Math.max(0, cur.qty + parseInt(b.dataset.step, 10)));
+        updateOrder({ discounts: list.filter(function(a){ return a.qty > 0; }) });
+      });
+    });
+    el.querySelector("#discCustomInput").addEventListener("change", function(e){
+      updateOrder({ disc_custom: Math.max(0, parseInt(e.target.value, 10) || 0) });
+    });
 
     el.querySelectorAll("[data-plan]").forEach(function(b){
       b.addEventListener("click", function(){
         var patch = { plan: b.dataset.plan };
-        if (PLANS[b.dataset.plan].type !== "nomi") { patch.upgrade = false; patch.ext_count = null; }
+        if (PLANS[b.dataset.plan].type !== "nomi") {
+          patch.upgrade = false; patch.ext_count = null;
+          patch.discounts = (o.discounts || []).filter(function(a){ return a.kind !== "free_hour"; });
+        }
         updateOrder(patch);
       });
     });
@@ -896,6 +1094,16 @@
     el.querySelector("#enteredInput").addEventListener("change", function(e){
       if (!e.target.value) return;
       updateOrder({ entered_at: dayTimeToIso(o.business_day, e.target.value) });
+    });
+    var spName = el.querySelector("#specialNameInput");
+    if (spName) spName.addEventListener("change", function(e){ updateOrder({ special_name: e.target.value.trim() }); });
+    var spPrice = el.querySelector("#specialPriceInput");
+    if (spPrice) spPrice.addEventListener("change", function(e){ updateOrder({ special_price: Math.max(0, parseInt(e.target.value, 10) || 0) }); });
+    el.querySelector("#companionInput").addEventListener("change", function(e){
+      updateOrder(e.target.checked ? { companion: true } : { companion: false, companion_cast_id: null });
+    });
+    el.querySelectorAll("[data-comp]").forEach(function(b){
+      b.addEventListener("click", function(){ updateOrder({ companion_cast_id: b.dataset.comp }); });
     });
     var up = el.querySelector("#upgradeInput");
     if (up) up.addEventListener("change", function(){ updateOrder({ upgrade: up.checked }); });
@@ -958,8 +1166,8 @@
     el.innerHTML = "";
     p.lines.forEach(function(l){
       var row = document.createElement("div");
-      row.className = "order-row plan-line";
-      row.innerHTML = '<div class="name">' + escapeHtml(l.name) + '</div><div class="line-total">' + fmtYen(l.amount) + '</div>';
+      row.className = "order-row plan-line" + (l.discount ? " discount-line" : "");
+      row.innerHTML = '<div class="name">' + escapeHtml(l.name) + '</div><div class="line-total">' + (l.amount < 0 ? "-" + fmtYen(-l.amount) : fmtYen(l.amount)) + '</div>';
       el.appendChild(row);
     });
     o.items.forEach(function(it){
@@ -970,6 +1178,13 @@
         var txt = it.cast_id ? "🦊 " + castName(it.cast_id) : "キャスト未選択";
         if (it.helper_cast_ids && it.helper_cast_ids.length) txt += " ＋ " + it.helper_cast_ids.map(castName).join("・");
         tag = '<br><button class="cast-tag' + (it.cast_id ? "" : " none") + '" data-act="cast">' + escapeHtml(txt) + ' ✎</button>';
+        // バック額の手動調整（メニューで「バック手動調整」にした商品だけ。例：テキカン）
+        var mi = menu.find(function(m){ return m.id === it.menu_item_id; });
+        if (mi && mi.back_adjustable) {
+          var auto = it.back_type === "fixed" ? (it.back_fixed || 0) * it.qty : Math.round(it.price * it.qty * BACK_RATE_NORMAL);
+          tag += '<br><span class="back-adj">バック ¥<input type="number" data-act="backov" min="0" step="100" value="' + (it.back_override != null ? it.back_override : "") + '" placeholder="自動" title="空欄なら自動計算（目安 ¥' + auto + '〜）">' +
+            (it.back_override != null ? '手動' : '自動') + '</span>';
+        }
       }
       row.innerHTML =
         '<div class="name">' + escapeHtml(it.name) + tag + '</div>' +
@@ -981,6 +1196,14 @@
       row.querySelector('[data-act="dec"]').addEventListener("click", async function(){
         if (it.qty <= 1) await sb.from("mf_order_items").delete().eq("id", it.id);
         else await sb.from("mf_order_items").update({ qty: it.qty - 1 }).eq("id", it.id);
+        await loadDay(currentDay);
+      });
+      var backIn = row.querySelector('[data-act="backov"]');
+      if (backIn) backIn.addEventListener("change", async function(e){
+        var v = e.target.value === "" ? null : Math.max(0, parseInt(e.target.value, 10) || 0);
+        var r = await sb.from("mf_order_items").update({ back_override: v }).eq("id", it.id);
+        if (r.error) { console.warn(r.error); toast("保存に失敗しました"); }
+        else toast(v == null ? "バックを自動計算に戻しました" : "バックを ¥" + v.toLocaleString() + " にしました");
         await loadDay(currentDay);
       });
       var castBtn = row.querySelector('[data-act="cast"]');
@@ -1087,8 +1310,17 @@
   document.getElementById("checkoutBtn").addEventListener("click", function(){
     var o = findOrder(activeOrderId);
     if (!o) return;
+    // お客様名は必須
+    if (!(o.customer_name || "").trim()) {
+      customerInput.classList.add("missing");
+      customerInput.focus();
+      toast("お客様名を入力してください");
+      return;
+    }
+    if (o.plan === "special" && !(o.special_price > 0)) { toast("特別初回セットの料金を入力してください"); return; }
+    if (o.companion && !o.companion_cast_id) { toast("同伴したキャストを選んでください"); return; }
     var sub = orderSubtotal(o, new Date());
-    if (sub <= 0) { toast("プランかメニューを追加してください"); return; }
+    if (sub <= 0 && !(o.discounts || []).length && !(o.disc_custom > 0)) { toast("プランかメニューを追加してください"); return; }
     var noCast = o.items.filter(function(it){ return it.back_type !== "none" && !it.cast_id; }).length;
     pendingPayMethod = null;
     document.getElementById("payBreakdown").innerHTML = totalsHtml(sub) +
@@ -1253,6 +1485,7 @@
         '<input type="text" data-f="category" value="' + escapeHtml(m.category) + '" style="flex:0 0 96px;min-width:0">' +
         '<select data-f="back"><option value="none">バックなし</option><option value="rate">％バック</option><option value="fixed">固定バック</option></select>' +
         (m.back_type === "fixed" ? '<input type="number" data-f="fixed" value="' + m.back_fixed + '" min="0" step="1000">' : '') +
+        (m.back_type !== "none" ? '<label style="font-size:12px;font-weight:700;color:var(--text-secondary);display:flex;align-items:center;gap:4px"><input type="checkbox" data-f="adj"' + (m.back_adjustable ? " checked" : "") + '>バック手動調整</label>' : '') +
         '<button class="icon-btn" data-act="del">🗑</button>';
       row.querySelector('[data-f="back"]').value = m.back_type;
       function upd(patch){ return sb.from("mf_menu_items").update(patch).eq("id", m.id).then(loadMenu); }
@@ -1260,6 +1493,8 @@
       row.querySelector('[data-f="price"]').addEventListener("change", function(e){ upd({ price: Math.max(0, parseInt(e.target.value, 10) || 0) }); });
       row.querySelector('[data-f="category"]').addEventListener("change", function(e){ upd({ category: e.target.value || "その他" }); });
       row.querySelector('[data-f="back"]').addEventListener("change", function(e){ upd({ back_type: e.target.value, back_fixed: e.target.value === "fixed" ? (m.back_fixed || 10000) : 0 }); });
+      var adj = row.querySelector('[data-f="adj"]');
+      if (adj) adj.addEventListener("change", function(e){ upd({ back_adjustable: e.target.checked }); });
       var fx = row.querySelector('[data-f="fixed"]');
       if (fx) fx.addEventListener("change", function(e){ upd({ back_fixed: Math.max(0, parseInt(e.target.value, 10) || 0) }); });
       row.querySelector('[data-act="del"]').addEventListener("click", function(){
@@ -1401,13 +1636,13 @@
       var wrap = document.createElement("div"); wrap.className = "completed-wrap";
       var row = document.createElement("div"); row.className = "completed-row";
       row.innerHTML = '<div class="dot" style="background:' + pm.color + '"></div>' +
-        '<div class="info"><div class="l">' + escapeHtml(orderLabel(o)) + '</div><div class="t">' + escapeHtml((PLANS[o.plan] || PLANS.none).short) + ' ' + o.guests + '名 ・ ' + fmtTime(o.entered_at) + '〜' + fmtTime(o.closed_at) + ' ・ ' + pm.label + '</div></div>' +
+        '<div class="info"><div class="l">' + escapeHtml(orderLabel(o)) + (o.companion ? '<span class="rate-mini">同伴' + (o.companion_cast_id ? "・" + escapeHtml(castName(o.companion_cast_id)) : "") + '</span>' : '') + '</div><div class="t">' + escapeHtml(o.plan === "special" && o.special_name ? o.special_name : (PLANS[o.plan] || PLANS.none).short) + ' ' + o.guests + '名 ・ ' + fmtTime(o.entered_at) + '〜' + fmtTime(o.closed_at) + ' ・ ' + pm.label + '</div></div>' +
         '<div class="amt">' + fmtYen(o.total || 0) + '<span class="s">税サ抜 ' + fmtYen(o.subtotal || 0) + '</span></div>' +
         '<button class="icon-btn" data-act="reopen" title="会計を取り消して編集">↩</button>' +
         '<button class="icon-btn" data-act="del">🗑</button>';
       var detail = document.createElement("div"); detail.className = "completed-detail"; detail.hidden = true;
       var pl = planLines(o, o.closed_at ? new Date(o.closed_at) : now);
-      detail.innerHTML = pl.lines.map(function(l){ return '<div class="detail-item-row"><span class="n">' + escapeHtml(l.name) + '</span><span class="p">' + fmtYen(l.amount) + '</span></div>'; }).join("") +
+      detail.innerHTML = pl.lines.map(function(l){ return '<div class="detail-item-row"><span class="n">' + escapeHtml(l.name) + '</span><span class="p">' + (l.amount < 0 ? "-" + fmtYen(-l.amount) : fmtYen(l.amount)) + '</span></div>'; }).join("") +
         o.items.map(function(it){
           var who = it.back_type !== "none" ? "（" + (it.cast_id ? castName(it.cast_id) : "キャスト未選択") + (it.helper_cast_ids && it.helper_cast_ids.length ? "＋" + it.helper_cast_ids.map(castName).join("・") : "") + "）" : "";
           return '<div class="detail-item-row"><span class="n">' + escapeHtml(it.name) + ' × ' + it.qty + escapeHtml(who) + '</span><span class="p">' + fmtYen(it.price * it.qty) + '</span></div>';
@@ -1523,6 +1758,7 @@
     ["mf_orders", "mf_order_items", "mf_purchases", "mf_attendance"].forEach(function(t){ ch.on("postgres_changes", { event: "*", schema: "public", table: t }, scheduleReload); });
     ch.on("postgres_changes", { event: "*", schema: "public", table: "mf_menu_items" }, function(){ loadMenu(); });
     ch.on("postgres_changes", { event: "*", schema: "public", table: "mf_casts" }, function(){ loadCasts(); });
+    ch.on("postgres_changes", { event: "*", schema: "public", table: "mf_discounts" }, function(){ loadDiscounts(); });
     if (isAdmin()) ch.on("postgres_changes", { event: "*", schema: "public", table: "mf_cast_wages" }, function(){ loadCasts(); });
     ch.subscribe(function(status){
       if (status === "SUBSCRIBED") setSyncDot("ok");
@@ -1536,7 +1772,7 @@
   }
   async function startApp(){
     setSyncDot("");
-    await Promise.all([loadMenu(), loadCasts()]);
+    await Promise.all([loadMenu(), loadCasts(), loadDiscounts()]);
     await loadDay(currentDay);
     initRealtime();
   }
