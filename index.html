@@ -362,6 +362,7 @@
           <button class="btn btn-primary btn-sm" id="addCastBtn">登録</button>
         </div>
         <div id="castEditList"></div>
+        <p class="hint" style="font-size:12px;color:var(--text-muted);margin:6px 2px 0">時給を変えると、<b>変えた日（今日の営業分）から</b>新しい時給で計算します。前の日の給与は前の時給のままです。</p>
       </div>
       <h2 class="section-title">ログイン中：<span id="roleLabel"></span></h2>
       <button class="btn btn-outline" id="logoutBtn">ログアウト（合言葉を入れ直す）</button>
@@ -676,8 +677,18 @@
   function hourlyPay(minutes, wage){
     return Math.floor(minutes * (wage || 0) / 60);
   }
-  // 1日分の給与計算。orders: 会計済み注文（subtotal と items を持つ）
-  function computeDayPayroll(casts, attendance, completedOrders, nowDate){
+  // その営業日に使う時給。effective_from がその日以前で一番新しい履歴を使う。
+  // その日より前の履歴が無いとき（初めて時給を入れる前の日）は一番古い履歴の時給を使う。履歴が無ければ fallback
+  function wageOn(history, castId, day, fallback){
+    var rows = (history || []).filter(function(h){ return h.cast_id === castId; })
+      .sort(function(a, b){ return a.effective_from < b.effective_from ? -1 : a.effective_from > b.effective_from ? 1 : 0; });
+    if (!rows.length) return fallback || 0;
+    var w = rows[0].hourly_wage;
+    rows.forEach(function(h){ if (h.effective_from <= day) w = h.hourly_wage; });
+    return w || 0;
+  }
+  // 1日分の給与計算。orders: 会計済み注文（subtotal と items を持つ）。wageFor(cast) で日ごとの時給を渡せる
+  function computeDayPayroll(casts, attendance, completedOrders, nowDate, wageFor){
     var daySales = completedOrders.reduce(function(s, o){ return s + (o.subtotal || 0); }, 0);
     var allItems = [];
     completedOrders.forEach(function(o){
@@ -692,9 +703,10 @@
       var mins = workedMinutes(recs, nowDate);
       var back = backs.byCast[c.id] || 0;
       if (recs.length === 0 && back === 0) return;
-      var hp = hourlyPay(mins, c.hourly_wage);
+      var wage = wageFor ? wageFor(c) : c.hourly_wage;
+      var hp = hourlyPay(mins, wage);
       rows.push({
-        cast: c, minutes: mins, hourly: hp, back: back, total: hp + back,
+        cast: c, wage: wage, minutes: mins, hourly: hp, back: back, total: hp + back,
         openShift: recs.some(function(r){ return !r.clock_out; }),
         details: backs.details[c.id] || []
       });
@@ -762,6 +774,7 @@
   var menu = [], casts = [], discounts = [];
   var dayData = { open: [], completed: [], purchases: [], attendance: [] };
   var currentDay = todayStr();
+  var wageHistory = [];
   var currentScreen = "screen-tables";
   var summaryMode = "day";
   var activeOrderId = null;
@@ -804,7 +817,9 @@
       var w = await sb.from("mf_cast_wages").select("cast_id, hourly_wage");
       if (w.error) { console.warn(w.error); toast("時給の取得に失敗しました"); }
       (w.data || []).forEach(function(r){ var c = castById(r.cast_id); if (c) c.hourly_wage = r.hourly_wage; });
-    }
+      var wh = await sb.from("mf_cast_wage_history").select("cast_id, hourly_wage, effective_from");
+      if (wh.error) { console.warn(wh.error); wageHistory = []; } else wageHistory = wh.data || [];
+    } else wageHistory = [];
     renderAttendance();
     if (currentScreen === "screen-summary") renderSummary();
   }
@@ -867,9 +882,14 @@
     await loadDiscounts(); toast("割引を追加しました");
   });
 
-  function saveWage(castId, wage){
-    return sb.from("mf_cast_wages").upsert({ cast_id: castId, hourly_wage: wage, updated_at: new Date().toISOString() });
+  // 時給は「今日の営業日」から新しい金額で計算する（前の日は前の時給のまま）。同じ日に何度変えても最後の金額
+  async function saveWage(castId, wage){
+    var nowIso = new Date().toISOString();
+    var r = await sb.from("mf_cast_wages").upsert({ cast_id: castId, hourly_wage: wage, updated_at: nowIso });
+    if (r.error) return r;
+    return sb.from("mf_cast_wage_history").upsert({ cast_id: castId, hourly_wage: wage, effective_from: todayStr(), updated_at: nowIso }, { onConflict: "cast_id,effective_from" });
   }
+  function wageForDay(day){ return function(c){ return wageOn(wageHistory, c.id, day, c.hourly_wage); }; }
   async function loadDay(day){
     var r = await Promise.all([
       sb.from("mf_orders").select("*, mf_order_items(*)").eq("business_day", day).order("opened_at"),
@@ -1479,7 +1499,7 @@
       row.querySelector('[data-f="name"]').addEventListener("change", async function(e){ await sb.from("mf_casts").update({ name: e.target.value || c.name }).eq("id", c.id); await loadCasts(); });
       row.querySelector('[data-f="wage"]').addEventListener("change", async function(e){
         var r = await saveWage(c.id, Math.max(0, parseInt(e.target.value, 10) || 0));
-        if (r.error) { console.warn(r.error); toast("時給の更新に失敗しました"); } else toast("時給を更新しました");
+        if (r.error) { console.warn(r.error); toast("時給の更新に失敗しました"); } else toast("時給を更新しました（今日の営業分から適用）");
         await loadCasts();
       });
       row.querySelector('[data-act="toggle"]').addEventListener("click", async function(){ await sb.from("mf_casts").update({ active: !c.active }).eq("id", c.id); await loadCasts(); });
@@ -1628,7 +1648,7 @@
     var body = rows.map(function(r){
       sum.m += r.minutes; sum.h += r.hourly; sum.b += r.back; sum.t += r.total;
       return '<tr><td>' + escapeHtml(r.cast.name) + (r.openShift ? ' <span class="sub">勤務中（現在時刻まで）</span>' : '') +
-        (monthly ? '<span class="sub">出勤 ' + r.days + '日</span>' : '<span class="sub">時給 ' + fmtYen(r.cast.hourly_wage) + '</span>') + '</td>' +
+        (monthly ? '<span class="sub">出勤 ' + r.days + '日</span>' : '<span class="sub">時給 ' + fmtYen(r.wage != null ? r.wage : r.cast.hourly_wage) + '</span>') + '</td>' +
         '<td>' + fmtHM(r.minutes) + '</td><td>' + fmtYen(r.hourly) + '</td><td>' + fmtYen(r.back) + '</td><td class="total">' + fmtYen(r.total) + '</td></tr>' +
         (!monthly && r.details.length ? '<tr><td colspan="5" style="text-align:left;padding:2px 10px 8px;border-top:none"><span class="sub">' +
           r.details.map(function(d){ return escapeHtml(d.name) + " " + fmtYen(d.amount); }).join(" ／ ") + '</span></td></tr>' : '');
@@ -1653,7 +1673,7 @@
     document.getElementById("breakdownTitle").textContent = "お会計履歴";
     var now = new Date();
     var completed = dayData.completed;
-    var pr = computeDayPayroll(casts, dayData.attendance, completed, now);
+    var pr = computeDayPayroll(casts, dayData.attendance, completed, now, wageForDay(currentDay));
     var labor = pr.rows.reduce(function(s, r){ return s + r.total; }, 0);
     var byMethod = {};
     completed.forEach(function(o){ byMethod[o.payment_method] = (byMethod[o.payment_method] || 0) + (o.total || 0); });
@@ -1728,7 +1748,7 @@
     Object.keys(days).sort().forEach(function(k){
       var dd = days[k];
       // 日ごとにバック率を判定してから合計する
-      var pr = computeDayPayroll(casts, dd.att, dd.orders, now);
+      var pr = computeDayPayroll(casts, dd.att, dd.orders, now, wageForDay(k));
       var labor = 0;
       pr.rows.forEach(function(row){
         var cs = castSum[row.cast.id] = castSum[row.cast.id] || { cast: row.cast, minutes: 0, hourly: 0, back: 0, total: 0, days: 0, details: [], openShift: false };
