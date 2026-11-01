@@ -535,11 +535,13 @@
     nomi:       { label: "通常 飲み放題", short: "飲放", group: "通常", type: "nomi", early: 3000, late: 3500, ext: 1500 },
     none:       { label: "プランなし", short: "プランなし", group: "その他", type: "none", price: 0 }
   };
-  var PLAN_ORDER = ["first_set", "first_nomi", "special", "neo_set", "charge", "nomi", "none"];
+  // ネオもふもふセットはプランから外した（チャージ＋メニューの「追加ネオもふもふセット（チャージ無し）」で同額。途中でボトルを頼んでもチャージが二重にならない）
+  var PLAN_ORDER = ["first_set", "first_nomi", "special", "charge", "nomi", "none"];
   var UPGRADE = { base: 1000, ext: 500 };
   var DOHAN_FEE = 3000;                  // 同伴料（1組あたり）
-  var DOHAN_BACK_RATE = 0.2;             // 同伴バックは常に20%（10万円超の日も変えない）
-  var FIRST_SET_AMU_FROM_MIN = 120;      // 初回もふもふセット: 入店2時間後から、1時間ごとにAmusementが必要
+  var DOHAN_BACK_YEN = 1500;             // 同伴バックは1,500円固定（10万円超の日も変えない）
+  var HOURLY_AMU_PLANS = ["charge", "neo_set"]; // 入店直後から1時間ごとにAmusementが必要（警告のみ）
+  var FIRST_SET_AMU_FROM_MIN = 60;       // 初回もふもふセット: 入店1時間後から、1時間ごとにAmusementが必要
 
   function isLateEntry(date){
     var h = date.getHours();
@@ -598,8 +600,8 @@
     if (custom > 0) lines.push({ name: "割引：その他の値引き", amount: -custom, discount: true });
     return { lines: lines, info: info };
   }
-  // 初回もふもふセット: 入店2時間後から、1時間ごとにAmusementが1つ以上必要（自動加算はせず、警告だけ）
-  // 2時間を過ぎてから注文されたAmusementを数え、始まった時間枠の数と比べる
+  // 初回もふもふセット: 入店1時間後から、1時間ごとにAmusementが1つ以上必要（自動加算はせず、警告だけ）
+  // 1時間を過ぎてから注文されたAmusementを数え、始まった時間枠の数と比べる
   function firstSetAmuStatus(order, nowDate, isAmusement){
     var elapsed = elapsedMinutes(order.entered_at, nowDate);
     if (order.plan !== "first_set" || elapsed < FIRST_SET_AMU_FROM_MIN) return { active: false, required: 0, count: 0, short: false };
@@ -641,7 +643,17 @@
       // back_override：手動で調整したバック額（この明細の合計額）。バック率は掛けない
       var manual = (it.back_override != null && it.back_override >= 0);
       if (it.back_type === "rate") {
-        give(it.cast_id, manual ? it.back_override : it.price * it.qty * rate, it.back_label || (it.name + " ×" + it.qty + (manual ? "（手動）" : "")));
+        var rtotal = manual ? it.back_override : it.price * it.qty * rate;
+        var label = it.back_label || (it.name + " ×" + it.qty + (manual ? "（手動）" : ""));
+        // その場のキャストで割る（テキカンなど）: 選んだキャスト全員で均等に
+        var mates = (it.helper_cast_ids || []).filter(function(h, i, arr){ return h && h !== it.cast_id && arr.indexOf(h) === i; });
+        if (it.cast_id && mates.length) {
+          var share = rtotal / (mates.length + 1);
+          give(it.cast_id, share, label + "（" + (mates.length + 1) + "人で割り）");
+          mates.forEach(function(h){ give(h, share, label + "（" + (mates.length + 1) + "人で割り）"); });
+        } else {
+          give(it.cast_id, rtotal, label);
+        }
       } else if (it.back_type === "fixed") {
         var total = manual ? it.back_override : (it.back_fixed || 0) * it.qty;
         var helpers = (it.helper_cast_ids || []).filter(function(h, i, arr){ return h && h !== it.cast_id && arr.indexOf(h) === i; });
@@ -671,7 +683,7 @@
     completedOrders.forEach(function(o){
       allItems = allItems.concat(o.items || []);
       // 同伴バック: 同伴料の20%を同伴したキャストに固定で（back_override なのでバック率30%の日も変わらない）
-      if (o.companion) allItems.push({ name: "同伴", price: DOHAN_FEE, qty: 1, back_type: "rate", cast_id: o.companion_cast_id || null, back_override: Math.round(DOHAN_FEE * DOHAN_BACK_RATE), back_label: "同伴（20%固定）" });
+      if (o.companion) allItems.push({ name: "同伴", price: DOHAN_FEE, qty: 1, back_type: "rate", cast_id: o.companion_cast_id || null, back_override: DOHAN_BACK_YEN, back_label: "同伴（固定）" });
     });
     var backs = computeBacks(allItems, daySales);
     var rows = [];
@@ -919,7 +931,7 @@
       var warn = "";
       if (p.info.plan.type === "nomi" && p.info.suggested > (o.ext_count == null ? -1 : o.ext_count) && p.info.suggested > 0)
         warn = "延長 目安" + p.info.suggested + "回";
-      if (p.info.plan.type === "charge") {
+      if (HOURLY_AMU_PLANS.indexOf(o.plan) >= 0) {
         var hours = Math.floor(p.info.elapsed / 60) + 1;
         if (amusementCount(o) < hours) warn = "Amusement " + amusementCount(o) + "/" + hours + "時間目";
       }
@@ -999,7 +1011,9 @@
     var now = new Date();
     var p = planLines(o, now);
     var el = document.getElementById("planCard");
-    var chips = PLAN_ORDER.map(function(k){
+    // 以前に選ばれていたプラン（ネオもふもふセットなど）は、その卓だけ表示を残す
+    var planKeys = PLAN_ORDER.indexOf(o.plan) >= 0 || !PLANS[o.plan] ? PLAN_ORDER : PLAN_ORDER.concat([o.plan]);
+    var chips = planKeys.map(function(k){
       var pl = PLANS[k];
       return '<button class="chip' + (pl.group === "初回" ? " brown" : "") + (o.plan === k ? " selected" : "") + '" data-plan="' + k + '">' + escapeHtml(pl.label) + '</button>';
     }).join("");
@@ -1013,18 +1027,18 @@
         '<div class="ctrl"><span class="rl">内容</span><input type="text" id="specialNameInput" value="' + escapeHtml(o.special_name || "") + '" placeholder="例: 特別初回（ボトル付き）" style="flex:1;min-width:0;border:1px solid var(--gridline);border-radius:8px;padding:6px 8px;font-size:14px;background:var(--surface-1);color:var(--text-primary)"></div>' +
         '<div class="ctrl"><span class="rl">1人あたりの料金</span><span class="rv">¥ <input type="number" id="specialPriceInput" min="0" step="100" value="' + (o.special_price || "") + '" placeholder="0" style="width:96px;border:1px solid var(--gridline);border-radius:8px;padding:6px 8px;font-size:15px;font-weight:700;background:var(--surface-1);color:var(--text-primary)"></span></div></div>';
     }
-    // 初回もふもふセット: 入店2時間後からのAmusement確認（警告のみ）
+    // 初回もふもふセット: 入店1時間後からのAmusement確認（警告のみ）
     if (o.plan === "first_set") {
       var fsx = firstSetAmuStatus(o, now, isAmusementItem);
       var left = FIRST_SET_AMU_FROM_MIN - p.info.elapsed;
-      html += '<div class="ext-box"><div class="guide">初回もふもふセットは、入店2時間後から1時間ごとにAmusementのご注文が必要です。<br>' +
+      html += '<div class="ext-box"><div class="guide">初回もふもふセットは、入店1時間後から1時間ごとにAmusementのご注文が必要です。<br>' +
         (fsx.active
-          ? '2時間後からのAmusement <b>' + fsx.count + '件</b> ／ 必要 <b>' + fsx.required + '件</b>' + (fsx.short ? '　<span style="color:var(--status-critical);font-weight:800">⚠ アミュ未注文</span>' : ' ✓')
-          : 'あと <b>' + Math.floor(left / 60) + '時間' + pad2(left % 60) + '分</b> で確認が始まります') + '</div></div>';
+          ? '1時間後からのAmusement <b>' + fsx.count + '件</b> ／ 必要 <b>' + fsx.required + '件</b>' + (fsx.short ? '　<span style="color:var(--status-critical);font-weight:800">⚠ アミュ未注文</span>' : ' ✓')
+          : 'あと <b>' + (left >= 60 ? Math.floor(left / 60) + '時間' + pad2(left % 60) + '分' : left + '分') + '</b> で確認が始まります') + '</div></div>';
     }
     // 同伴
     var compCast = o.companion_cast_id ? castName(o.companion_cast_id) : "";
-    html += '<div class="row"><span class="rl">同伴<br><span class="small-note">同伴料 ' + fmtYen(DOHAN_FEE) + '・同伴キャストにバック ' + fmtYen(Math.round(DOHAN_FEE * DOHAN_BACK_RATE)) + '（固定）</span></span><label class="switch"><input type="checkbox" id="companionInput"' + (o.companion ? " checked" : "") + '><span></span></label></div>';
+    html += '<div class="row"><span class="rl">同伴<br><span class="small-note">同伴料 ' + fmtYen(DOHAN_FEE) + '・同伴キャストにバック ' + fmtYen(DOHAN_BACK_YEN) + '（固定）</span></span><label class="switch"><input type="checkbox" id="companionInput"' + (o.companion ? " checked" : "") + '><span></span></label></div>';
     if (o.companion) {
       html += '<div class="row" style="display:block"><div class="rl" style="margin-bottom:6px">同伴したキャスト' + (compCast ? "" : '　<span style="color:var(--status-critical)">（選んでください）</span>') + '</div><div class="chips">' +
         activeCasts().map(function(c){ return '<button class="chip' + (o.companion_cast_id === c.id ? " selected" : "") + '" data-comp="' + c.id + '">' + escapeHtml(c.name) + '</button>'; }).join("") + '</div></div>';
@@ -1042,10 +1056,10 @@
           '<div class="ctrl"><span class="' + (manual ? "manual-tag" : "auto-tag") + '">' + (manual ? "✋ 手動で調整中（時間が経っても自動では増えません）" : "⏱ 自動（時間に合わせて増えます）") + '</span>' +
             (manual ? '<button class="link-btn" id="extAutoBtn">目安に戻す</button>' : '') + '</div>' +
         '</div>';
-    } else if (p.info.plan.type === "charge") {
+    } else if (HOURLY_AMU_PLANS.indexOf(o.plan) >= 0) {
       var hours = Math.floor(p.info.elapsed / 60) + 1;
       var ac = amusementCount(o);
-      html += '<div class="ext-box"><div class="guide">チャージは1時間ごとに1回以上Amusementのご注文が必要です。<br>現在 <b>' + hours + '時間目</b> ／ Amusement <b>' + ac + '件</b>' + (ac < hours ? '　<span style="color:var(--status-critical)">⚠ 不足</span>' : ' ✓') + '</div></div>';
+      html += '<div class="ext-box"><div class="guide">' + escapeHtml(p.info.plan.short) + 'は入店から1時間ごとに1回以上Amusementのご注文が必要です。<br>現在 <b>' + hours + '時間目</b> ／ Amusement <b>' + ac + '件</b>' + (ac < hours ? '　<span style="color:var(--status-critical)">⚠ 不足</span>' : ' ✓') + '</div></div>';
     }
     // 割引
     var g = o.guests || 1;
@@ -1138,7 +1152,7 @@
 
   async function onMenuTap(m){
     if (m.back_type === "none") { await addItem(m, null, []); return; }
-    openCastPicker({ fixed: m.back_type === "fixed", title: m.name }, function(main, helpers){ addItem(m, main, helpers); });
+    openCastPicker({ fixed: m.back_type === "fixed", split: !!m.back_splittable && m.back_type === "rate", title: m.name }, function(main, helpers){ addItem(m, main, helpers); });
   }
   async function addItem(m, castId, helpers){
     var o = findOrder(activeOrderId);
@@ -1177,7 +1191,7 @@
       var tag = "";
       if (it.back_type !== "none") {
         var txt = it.cast_id ? "🦊 " + castName(it.cast_id) : "キャスト未選択";
-        if (it.helper_cast_ids && it.helper_cast_ids.length) txt += " ＋ " + it.helper_cast_ids.map(castName).join("・");
+        if (it.helper_cast_ids && it.helper_cast_ids.length) txt += " ＋ " + it.helper_cast_ids.map(castName).join("・") + (it.back_type === "rate" ? "（" + (it.helper_cast_ids.length + 1) + "人で割り）" : "");
         tag = '<br><button class="cast-tag' + (it.cast_id ? "" : " none") + '" data-act="cast">' + escapeHtml(txt) + ' ✎</button>';
         // バック額の手動調整（メニューで「バック手動調整」にした商品だけ。例：テキカン）
         var mi = menu.find(function(m){ return m.id === it.menu_item_id; });
@@ -1209,7 +1223,8 @@
       });
       var castBtn = row.querySelector('[data-act="cast"]');
       if (castBtn) castBtn.addEventListener("click", function(){
-        openCastPicker({ fixed: it.back_type === "fixed", title: it.name, main: it.cast_id, helpers: it.helper_cast_ids || [] }, async function(main, helpers){
+        var mm = menu.find(function(x){ return x.id === it.menu_item_id; });
+        openCastPicker({ fixed: it.back_type === "fixed", split: !!(mm && mm.back_splittable) && it.back_type === "rate", title: it.name, main: it.cast_id, helpers: it.helper_cast_ids || [] }, async function(main, helpers){
           var r = await sb.from("mf_order_items").update({ cast_id: main, helper_cast_ids: helpers }).eq("id", it.id);
           if (r.error) toast("変更に失敗しました");
           await loadDay(currentDay);
@@ -1245,7 +1260,9 @@
   var castOverlay = document.getElementById("castOverlay");
   var castPick = null;
   function openCastPicker(opts, onDone){
-    castPick = { fixed: !!opts.fixed, main: opts.main || null, helpers: (opts.helpers || []).slice(), onDone: onDone };
+    // split: テキカンなど「1人でもらう／その場のキャストで均等に割る」を選べる商品
+    castPick = { fixed: !!opts.fixed, split: !!opts.split, main: opts.main || null, helpers: (opts.helpers || []).slice(), onDone: onDone };
+    castPick.share = castPick.split && castPick.helpers.length > 0;
     document.getElementById("castPickTitle").textContent = opts.title + "：誰のバック？";
     renderCastPicker();
     castOverlay.classList.add("active");
@@ -1268,9 +1285,22 @@
       body.innerHTML = '<div class="empty-state">キャストが未登録です。「出勤」タブで登録してください。</div>' +
         '<button class="chip" data-none="1">キャストなしで追加</button>';
     } else {
-      var html = '<div class="rl" style="font-size:13px;font-weight:800;margin:4px 0 8px">' + (castPick.fixed ? "① 選ばれたキャスト（バックの半分）" : "キャスト") + '</div>' +
+      var html = '';
+      if (castPick.split) {
+        html += '<div class="rl" style="font-size:13px;font-weight:800;margin:4px 0 8px">バックの付け方</div>' +
+          '<div class="chips" style="margin-bottom:14px">' +
+          '<button class="chip brown' + (castPick.share ? '' : ' selected') + '" data-mode="solo">1人でもらう</button>' +
+          '<button class="chip brown' + (castPick.share ? ' selected' : '') + '" data-mode="share">その場のキャストで割る</button></div>';
+      }
+      var mainLabel = castPick.fixed ? "① 選ばれたキャスト（バックの半分）" : castPick.share ? "① キャスト（1人目）" : "キャスト";
+      html += '<div class="rl" style="font-size:13px;font-weight:800;margin:4px 0 8px">' + mainLabel + '</div>' +
         '<div class="chips" id="mainChips">' + list.map(function(c){ return castChip(c, castPick.main === c.id); }).join("") +
         '<button class="chip' + (castPick.main === null ? " selected" : "") + '" data-none="1">キャストなし</button></div>';
+      if (castPick.share) {
+        html += '<div class="rl" style="font-size:13px;font-weight:800;margin:16px 0 4px">② 一緒に割るキャスト（全員で均等に分けます）</div>' +
+          '<p class="hint" style="margin:0 0 8px">①と②で選んだキャスト全員で、バックを同じ金額ずつ分けます。</p>' +
+          '<div class="chips" id="helperChips">' + list.filter(function(c){ return c.id !== castPick.main; }).map(function(c){ return castChip(c, castPick.helpers.indexOf(c.id) >= 0); }).join("") + '</div>';
+      }
       if (castPick.fixed) {
         html += '<div class="rl" style="font-size:13px;font-weight:800;margin:16px 0 4px">② 一緒に飲んだキャスト（残り半分を均等割り・いなければ選ばない）</div>' +
           '<p class="hint" style="margin:0 0 8px">誰も選ばなければ、①のキャストに全額入ります。</p>' +
@@ -1282,11 +1312,18 @@
       b.addEventListener("click", function(){
         castPick.main = b.dataset.id;
         castPick.helpers = castPick.helpers.filter(function(h){ return h !== castPick.main; });
-        if (!castPick.fixed) finishCastPick(); else renderCastPicker();
+        if (!castPick.fixed && !castPick.share) finishCastPick(); else renderCastPicker();
       });
     });
     body.querySelectorAll("[data-none]").forEach(function(b){
-      b.addEventListener("click", function(){ castPick.main = null; castPick.helpers = []; if (!castPick.fixed || list.length === 0) finishCastPick(); else renderCastPicker(); });
+      b.addEventListener("click", function(){ castPick.main = null; castPick.helpers = []; if ((!castPick.fixed && !castPick.share) || list.length === 0) finishCastPick(); else renderCastPicker(); });
+    });
+    body.querySelectorAll("[data-mode]").forEach(function(b){
+      b.addEventListener("click", function(){
+        castPick.share = b.dataset.mode === "share";
+        if (!castPick.share) castPick.helpers = [];
+        renderCastPicker();
+      });
     });
     body.querySelectorAll("#helperChips [data-id]").forEach(function(b){
       b.addEventListener("click", function(){
@@ -1295,7 +1332,7 @@
         renderCastPicker();
       });
     });
-    document.getElementById("castPickOkBtn").style.display = castPick.fixed ? "" : "none";
+    document.getElementById("castPickOkBtn").style.display = (castPick.fixed || castPick.share) ? "" : "none";
   }
   function finishCastPick(){
     castOverlay.classList.remove("active");
