@@ -382,7 +382,7 @@
         <div id="discEditList"></div>
       </div>
       <h2 class="section-title">メニューを追加</h2>
-      <p class="hint">バック区分：「％バック」は売価×20%（10万円超の日は30%）、「固定バック」は1本あたりの固定額を関わったキャストで分けます（選ばれたキャストが半分、残りを他のキャストで均等）。</p>
+      <p class="hint">バック区分：「％バック」は売価×20%（10万円超の日は30%。超えた時点で退勤済みのキャストは20%）、「固定バック」は1本あたりの固定額を関わったキャストで分けます（選ばれたキャストが半分、残りを他のキャストで均等）。</p>
       <div class="add-form">
         <input type="text" id="newItemName" placeholder="商品名">
         <input type="number" id="newItemPrice" placeholder="価格" min="0" step="100">
@@ -526,6 +526,7 @@
   var HIGH_SALES_THRESHOLD = 100000;     // 店全体の税サ抜売上がこれを「超えたら」その日の全バックが30%
   var NOMI_BASE_MINUTES = 60;            // 飲み放題の基本時間
   var EXT_MINUTES = 30;                  // 延長単位
+  var EXT_GRACE_MINUTES = 5;             // 延長のおまけ時間（区切りを過ぎても5分までは延長にしない）
 
   var PLANS = {
     first_set:  { label: "初回もふもふセット", short: "初回セット", group: "初回", type: "set", price: 5000 },
@@ -551,9 +552,9 @@
   function elapsedMinutes(fromIso, toDate){
     return Math.max(0, Math.floor((toDate.getTime() - new Date(fromIso).getTime()) / 60000));
   }
-  // 延長回数の目安（1分でも超えたら1回）
+  // 延長回数の目安（区切りごとに5分まではおまけ。1時間5分までは延長なし、6分で1回、1時間36分で2回）
   function suggestedExtCount(enteredIso, nowDate){
-    var over = elapsedMinutes(enteredIso, nowDate) - NOMI_BASE_MINUTES;
+    var over = elapsedMinutes(enteredIso, nowDate) - NOMI_BASE_MINUTES - EXT_GRACE_MINUTES;
     return over > 0 ? Math.ceil(over / EXT_MINUTES) : 0;
   }
   // プラン部分の明細行を返す
@@ -632,8 +633,10 @@
   }
   // 1日分のバックをキャストごとに計算する。items: 会計済み注文の明細
   // 戻り値: { rate, byCast: {castId: amount}, details: {castId: [{name, amount}]}, unassigned }
-  function computeBacks(items, daySalesExTax){
+  // rateFor(castId)：キャストごとのバック率（10万円を超える前に退勤した子は20%など）。無ければ全員その日の率
+  function computeBacks(items, daySalesExTax, rateFor){
     var rate = backRateForDay(daySalesExTax);
+    function rOf(castId){ return castId && rateFor ? rateFor(castId) : rate; }
     var byCast = {}, details = {}, unassigned = 0;
     function give(castId, amount, label){
       if (!castId) { unassigned += amount; return; }
@@ -644,16 +647,15 @@
       // back_override：手動で調整したバック額（この明細の合計額）。バック率は掛けない
       var manual = (it.back_override != null && it.back_override >= 0);
       if (it.back_type === "rate") {
-        var rtotal = manual ? it.back_override : it.price * it.qty * rate;
+        var base = it.price * it.qty;
         var label = it.back_label || (it.name + " ×" + it.qty + (manual ? "（手動）" : ""));
-        // その場のキャストで割る（テキカンなど）: 選んだキャスト全員で均等に
+        // その場のキャストで割る（テキカンなど）: 選んだキャスト全員で均等に（自動のときは各自のバック率で）
         var mates = (it.helper_cast_ids || []).filter(function(h, i, arr){ return h && h !== it.cast_id && arr.indexOf(h) === i; });
         if (it.cast_id && mates.length) {
-          var share = rtotal / (mates.length + 1);
-          give(it.cast_id, share, label + "（" + (mates.length + 1) + "人で割り）");
-          mates.forEach(function(h){ give(h, share, label + "（" + (mates.length + 1) + "人で割り）"); });
+          var n = mates.length + 1, lab = label + "（" + n + "人で割り）";
+          [it.cast_id].concat(mates).forEach(function(cid){ give(cid, manual ? it.back_override / n : base * rOf(cid) / n, lab); });
         } else {
-          give(it.cast_id, rtotal, label);
+          give(it.cast_id, manual ? it.back_override : base * rOf(it.cast_id), label);
         }
       } else if (it.back_type === "fixed") {
         var total = manual ? it.back_override : (it.back_fixed || 0) * it.qty;
@@ -687,6 +689,18 @@
     rows.forEach(function(h){ if (h.effective_from <= day) w = h.hourly_wage; });
     return w || 0;
   }
+  // 会計済み売上（税サ抜）が10万円を超えた時刻（ms）。会計時刻が無い注文があると判定できないので null
+  function salesCrossTime(completedOrders){
+    var list = completedOrders.slice();
+    if (list.some(function(o){ return !o.closed_at; })) return null;
+    list.sort(function(a, b){ return new Date(a.closed_at) - new Date(b.closed_at); });
+    var cum = 0;
+    for (var i = 0; i < list.length; i++) {
+      cum += list[i].subtotal || 0;
+      if (cum > HIGH_SALES_THRESHOLD) return new Date(list[i].closed_at).getTime();
+    }
+    return null;
+  }
   // 1日分の給与計算。orders: 会計済み注文（subtotal と items を持つ）。wageFor(cast) で日ごとの時給を渡せる
   function computeDayPayroll(casts, attendance, completedOrders, nowDate, wageFor){
     var daySales = completedOrders.reduce(function(s, o){ return s + (o.subtotal || 0); }, 0);
@@ -696,7 +710,19 @@
       // 同伴バック: 同伴料の20%を同伴したキャストに固定で（back_override なのでバック率30%の日も変わらない）
       if (o.companion) allItems.push({ name: "同伴", price: DOHAN_FEE, qty: 1, back_type: "rate", cast_id: o.companion_cast_id || null, back_override: DOHAN_BACK_YEN, back_label: "同伴（固定）" });
     });
-    var backs = computeBacks(allItems, daySales);
+    // 10万円を超えた日：超えた時点（その会計の時刻）より前に退勤していたキャストは通常の20%のまま
+    var rate = backRateForDay(daySales), crossAt = null, rateFor = null, early = {};
+    if (rate === BACK_RATE_HIGH) {
+      crossAt = salesCrossTime(completedOrders);
+      if (crossAt != null) {
+        casts.forEach(function(c){
+          var recs = attendance.filter(function(a){ return a.cast_id === c.id; });
+          if (recs.length && recs.every(function(a){ return a.clock_out && new Date(a.clock_out).getTime() < crossAt; })) early[c.id] = true;
+        });
+        rateFor = function(castId){ return early[castId] ? BACK_RATE_NORMAL : BACK_RATE_HIGH; };
+      }
+    }
+    var backs = computeBacks(allItems, daySales, rateFor);
     var rows = [];
     casts.forEach(function(c){
       var recs = attendance.filter(function(a){ return a.cast_id === c.id; });
@@ -708,10 +734,11 @@
       rows.push({
         cast: c, wage: wage, minutes: mins, hourly: hp, back: back, total: hp + back,
         openShift: recs.some(function(r){ return !r.clock_out; }),
+        leftBeforeHigh: !!early[c.id],
         details: backs.details[c.id] || []
       });
     });
-    return { daySales: daySales, rate: backs.rate, rows: rows, unassigned: backs.unassigned };
+    return { daySales: daySales, rate: backs.rate, crossAt: crossAt, rows: rows, unassigned: backs.unassigned };
   }
   // ==CALC END==
 
@@ -1069,7 +1096,7 @@
       html +=
         '<div class="row"><span class="rl">飲み放題UpGrade（+¥1,000／延長+¥500）</span><label class="switch"><input type="checkbox" id="upgradeInput"' + (o.upgrade ? " checked" : "") + '><span></span></label></div>' +
         '<div class="ext-box">' +
-          '<div class="guide">延長（30分 ¥1,500／人）　アプリの目安：<b>' + p.info.suggested + '回</b>' +
+          '<div class="guide">延長（30分 ¥1,500／人・区切りから5分はおまけ）　アプリの目安：<b>' + p.info.suggested + '回</b>' +
             (over > 0 ? '（' + over + '分超過）' : '（基本1時間内・残り' + (-over) + '分）') + '</div>' +
           '<div class="ctrl"><span class="rl">請求する回数</span>' +
             '<div class="qty-stepper"><button class="brown" data-ext="-1">−</button><span class="qty">' + p.info.extUsed + '</span><button class="brown" data-ext="1">＋</button></div></div>' +
@@ -1648,7 +1675,8 @@
     var body = rows.map(function(r){
       sum.m += r.minutes; sum.h += r.hourly; sum.b += r.back; sum.t += r.total;
       return '<tr><td>' + escapeHtml(r.cast.name) + (r.openShift ? ' <span class="sub">勤務中（現在時刻まで）</span>' : '') +
-        (monthly ? '<span class="sub">出勤 ' + r.days + '日</span>' : '<span class="sub">時給 ' + fmtYen(r.wage != null ? r.wage : r.cast.hourly_wage) + '</span>') + '</td>' +
+        (monthly ? '<span class="sub">出勤 ' + r.days + '日</span>' : '<span class="sub">時給 ' + fmtYen(r.wage != null ? r.wage : r.cast.hourly_wage) + '</span>') +
+        (r.leftBeforeHigh ? '<span class="sub" style="color:var(--status-critical)">10万円超の前に退勤→バック20%</span>' : '') + '</td>' +
         '<td>' + fmtHM(r.minutes) + '</td><td>' + fmtYen(r.hourly) + '</td><td>' + fmtYen(r.back) + '</td><td class="total">' + fmtYen(r.total) + '</td></tr>' +
         (!monthly && r.details.length ? '<tr><td colspan="5" style="text-align:left;padding:2px 10px 8px;border-top:none"><span class="sub">' +
           r.details.map(function(d){ return escapeHtml(d.name) + " " + fmtYen(d.amount); }).join(" ／ ") + '</span></td></tr>' : '');
@@ -1658,13 +1686,13 @@
       (unassigned > 0 ? '<p class="hint" style="margin-top:8px;color:var(--status-critical)">⚠ キャスト未選択のバック ' + fmtYen(unassigned) + ' があります（誰にも計上されていません）。お会計履歴から確認してください。</p>' : '');
     return sum;
   }
-  function renderRateCard(daySales, rate){
+  function renderRateCard(daySales, rate, crossAt){
     var high = rate === BACK_RATE_HIGH;
     var pctv = Math.min(100, daySales / HIGH_SALES_THRESHOLD * 100);
     document.getElementById("rateCard").innerHTML = '<div class="rate-card"><div class="top"><span>本日のバック率</span><span class="badge' + (high ? " high" : "") + '">' + Math.round(rate * 100) + '%</span></div>' +
       '<div class="bar-track"><div class="bar-fill" style="width:' + pctv + '%;' + (high ? "background:var(--status-critical)" : "") + '"></div></div>' +
-      '<div class="sub">会計済み売上（税サ抜） ' + fmtYen(daySales) + ' ／ ' + fmtYen(HIGH_SALES_THRESHOLD) + ' を超えるとその日の全バックが30%' +
-      (high ? '' : '（あと ' + fmtYen(HIGH_SALES_THRESHOLD - daySales + 1) + '）') + '</div></div>';
+      '<div class="sub">会計済み売上（税サ抜） ' + fmtYen(daySales) + ' ／ ' + fmtYen(HIGH_SALES_THRESHOLD) + ' を超えるとその日のバックが30%（超えた時点で退勤済みのキャストは20%のまま）' +
+      (high ? (crossAt ? '<br>10万円を超えた時刻：' + fmtTime(new Date(crossAt).toISOString()) : '') : '（あと ' + fmtYen(HIGH_SALES_THRESHOLD - daySales + 1) + '）') + '</div></div>';
   }
   function renderSummary(){ if (summaryMode === "month") renderMonthSummary(); else renderDaySummary(); }
 
@@ -1682,7 +1710,7 @@
       count: completed.length, guests: completed.reduce(function(s, o){ return s + (o.guests || 0); }, 0),
       cost: dayData.purchases.reduce(function(s, p){ return s + p.amount; }, 0), labor: labor
     });
-    renderRateCard(pr.daySales, pr.rate);
+    renderRateCard(pr.daySales, pr.rate, pr.crossAt);
     renderPayrollTable(pr.rows, pr.unassigned, false);
     renderPaymentBars(byMethod);
 
