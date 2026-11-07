@@ -550,10 +550,13 @@
     neo_set:    { label: "ネオもふもふセット", short: "ネオセット", group: "通常", type: "set", price: 8000 },
     charge:     { label: "チャージ（時間無制限）", short: "チャージ", group: "通常", type: "charge", price: 2000 },
     nomi:       { label: "通常 飲み放題", short: "飲放", group: "通常", type: "nomi", early: 3000, late: 3500, ext: 1500 },
+    annai:      { label: "無料案内所 飲み放題", short: "案内所", group: "通常", type: "nomi", early: 3000, late: 3000, ext: 1500 },
+    base:       { label: "BASE（通販）", short: "BASE", group: "その他", type: "none", price: 0, noTax: true },
     none:       { label: "プランなし", short: "プランなし", group: "その他", type: "none", price: 0 }
   };
   // ネオもふもふセットはプランから外した（チャージ＋メニューの「追加ネオもふもふセット（チャージ無し）」で同額。途中でボトルを頼んでもチャージが二重にならない）
-  var PLAN_ORDER = ["first_set", "first_nomi", "special", "charge", "nomi", "none"];
+  var PLAN_ORDER = ["first_set", "first_nomi", "special", "charge", "nomi", "annai", "none", "base"];
+  var BASE_CATEGORY = "BASE";            // BASE（通販）の商品はこのカテゴリのメニュー
   var UPGRADE = { base: 1000, ext: 500 };
   var DOHAN_FEE = 3000;                  // 同伴料（1組あたり）
   var DOHAN_BACK_YEN = 1500;             // 同伴バックは1,500円固定（10万円超の日も変えない）
@@ -642,6 +645,13 @@
   function grandTotal(subtotal){
     if (subtotal <= 0) return 0;
     return Math.ceil(subtotal * (100 + TAX_SERVICE_RATE_PCT) / (100 * ROUND_UNIT)) * ROUND_UNIT;
+  }
+  // 注文の合計。BASE（通販）はBASEの値段を税サ抜として、そのまま合計にする（消費税・サービス料を足さない）
+  function isBaseOrder(order){ return !!(PLANS[order && order.plan] || PLANS.none).noTax; }
+  function orderTotal(order, subtotal){
+    var plan = PLANS[order && order.plan] || PLANS.none;
+    if (plan.noTax) return Math.max(0, subtotal);
+    return grandTotal(subtotal);
   }
   function backRateForDay(daySalesExTax){
     return daySalesExTax > HIGH_SALES_THRESHOLD ? BACK_RATE_HIGH : BACK_RATE_NORMAL;
@@ -781,7 +791,8 @@
     { id: "cash", label: "現金", color: "var(--series-1)" },
     { id: "credit", label: "クレジット", color: "var(--series-2)" },
     { id: "paypay", label: "PayPay", color: "var(--series-3)" },
-    { id: "other", label: "その他", color: "var(--series-4)" }
+    { id: "other", label: "その他", color: "var(--series-4)" },
+    { id: "base", label: "BASE", color: "var(--series-2)" }
   ];
 
   function pad2(n){ return ("" + n).padStart(2, "0"); }
@@ -987,14 +998,19 @@
   function renderDaySalesCard(){
     var el = document.getElementById("daySalesCard");
     if (!el) return;
-    var done = dayData.completed || [];
+    var all = dayData.completed || [];
+    // お店の売上（レジ金の計算用）。BASE（通販）はレジを通らないので分けて出す
+    var done = all.filter(function(o){ return !(PLANS[o.plan] || PLANS.none).noTax; });
+    var base = all.filter(function(o){ return (PLANS[o.plan] || PLANS.none).noTax; });
     var salesIn = done.reduce(function(s, o){ return s + (o.total || 0); }, 0);
     var salesEx = done.reduce(function(s, o){ return s + (o.subtotal || 0); }, 0);
+    var baseEx = base.reduce(function(s, o){ return s + (o.subtotal || 0); }, 0);
     var dayLbl = currentDay === todayStr() ? "今日" : currentDay.slice(5).replace("-", "/");
     el.innerHTML = '<div class="stat-tiles" style="margin-bottom:12px">' +
       tile(dayLbl + "の売上（税サ込）", fmtYen(salesIn)) +
       tile(dayLbl + "の売上（税サ抜）", fmtYen(salesEx)) +
-      tile("会計済み", done.length + "件") + '</div>';
+      tile("会計済み", done.length + "件") +
+      (base.length ? tile("BASE（税サ抜）", fmtYen(baseEx) + "／" + base.length + "件") : "") + '</div>';
   }
   function renderActiveTables(){
     renderDaySalesCard();
@@ -1021,7 +1037,7 @@
           (o.companion ? '<span class="tag-dohan">同伴' + (o.companion_cast_id ? "・" + escapeHtml(castName(o.companion_cast_id)) : "") + '</span>' : '') + '</div>' +
         '<div class="meta">' + escapeHtml(p.info.plan.short) + ' ・ ' + (o.guests || 1) + '名 ・ ' + fmtTime(o.entered_at) + '〜（' + fmtHM(p.info.elapsed) + '）</div>' +
         (warn ? '<div class="warn">⚠ ' + escapeHtml(warn) + '</div>' : '') +
-        '<div class="amount">' + fmtYen(grandTotal(sub)) + '</div>';
+        '<div class="amount">' + fmtYen(orderTotal(o, sub)) + '</div>';
       card.addEventListener("click", function(){ openOrderSheet(o.id); });
       grid.appendChild(card);
     });
@@ -1210,7 +1226,15 @@
     el.innerHTML = "";
     if (menu.length === 0) { el.innerHTML = '<div class="empty-state">メニューが未登録です</div>'; return; }
     var byCat = {}, catOrder = [];
-    menu.forEach(function(m){ var c = m.category || "その他"; if (!byCat[c]) { byCat[c] = []; catOrder.push(c); } byCat[c].push(m); });
+    // BASE（通販）の注文ではBASEの商品だけ、お店の注文ではBASE以外の商品だけを出す
+    var cur = findOrder(activeOrderId);
+    var baseOrder = !!(cur && (PLANS[cur.plan] || PLANS.none).noTax);
+    menu.forEach(function(m){
+      var c = m.category || "その他";
+      if ((c === BASE_CATEGORY) !== baseOrder) return;
+      if (!byCat[c]) { byCat[c] = []; catOrder.push(c); } byCat[c].push(m);
+    });
+    if (catOrder.length === 0) { el.innerHTML = '<div class="empty-state">' + (baseOrder ? "BASEの商品が未登録です（メニューのカテゴリを「BASE」にして登録）" : "メニューが未登録です") + '</div>'; return; }
     catOrder.forEach(function(cat){
       var h = document.createElement("div"); h.className = "menu-cat"; h.textContent = cat; el.appendChild(h);
       var g = document.createElement("div"); g.className = "menu-grid";
@@ -1311,10 +1335,14 @@
     if (p.lines.length === 0 && o.items.length === 0) el.innerHTML = '<div class="empty-state">プランを選ぶか、メニューをタップしてください</div>';
 
     var sub = orderSubtotal(o, now);
-    document.getElementById("orderTotals").innerHTML = totalsHtml(sub);
-    document.getElementById("orderTotal").textContent = fmtYen(grandTotal(sub));
+    document.getElementById("orderTotals").innerHTML = totalsHtml(sub, o);
+    document.getElementById("orderTotal").textContent = fmtYen(orderTotal(o, sub));
   }
-  function totalsHtml(sub){
+  function totalsHtml(sub, o){
+    if ((PLANS[o && o.plan] || PLANS.none).noTax) {
+      return '<div class="tr"><span>BASEの売上（税サ抜）</span><span>' + fmtYen(sub) + '</span></div>' +
+        '<div class="tr"><span>BASEは消費税・サービス料を足しません</span><span></span></div>';
+    }
     var raw = sub * (100 + TAX_SERVICE_RATE_PCT) / 100;
     return '<div class="tr"><span>小計（税サ抜）</span><span>' + fmtYen(sub) + '</span></div>' +
       '<div class="tr"><span>消費税10%＋サービス料15%</span><span>' + fmtYen(sub * TAX_SERVICE_RATE_PCT / 100) + '</span></div>' +
@@ -1437,12 +1465,13 @@
     if (sub <= 0 && !(o.discounts || []).length && !(o.disc_custom > 0)) { toast("プランかメニューを追加してください"); return; }
     var noCast = o.items.filter(function(it){ return it.back_type !== "none" && !it.cast_id; }).length;
     pendingPayMethod = null;
-    document.getElementById("payBreakdown").innerHTML = totalsHtml(sub) +
+    document.getElementById("payBreakdown").innerHTML = totalsHtml(sub, o) +
       (noCast ? '<div class="tr" style="color:var(--status-critical)"><span>⚠ キャスト未選択のバック対象が ' + noCast + ' 件あります</span></div>' : '');
-    document.getElementById("payAmount").textContent = fmtYen(grandTotal(sub));
+    document.getElementById("payAmount").textContent = fmtYen(orderTotal(o, sub));
     var wrap = document.getElementById("payMethodButtons");
     wrap.innerHTML = "";
-    PAY_METHODS.forEach(function(pm){
+    var isBase = !!(PLANS[o.plan] || PLANS.none).noTax;
+    PAY_METHODS.filter(function(pm){ return isBase ? pm.id === "base" : pm.id !== "base"; }).forEach(function(pm){
       var b = document.createElement("button");
       b.textContent = pm.label;
       b.addEventListener("click", function(){
@@ -1466,7 +1495,7 @@
     var r = await sb.from("mf_orders").update({
       status: "completed", payment_method: pendingPayMethod,
       ext_count: p.info.plan.type === "nomi" ? p.info.extUsed : null,
-      subtotal: sub, total: grandTotal(sub), closed_at: now.toISOString()
+      subtotal: sub, total: orderTotal(o, sub), closed_at: now.toISOString()
     }).eq("id", o.id);
     if (r.error) { console.warn(r.error); toast("会計に失敗しました"); return; }
     payOverlay.classList.remove("active"); orderOverlay.classList.remove("active"); activeOrderId = null;
@@ -1680,8 +1709,9 @@
   function renderTiles(s){
     var diff = s.salesEx - s.cost - s.labor;
     document.getElementById("statTiles").innerHTML =
-      tile("売上（税サ込）", fmtYen(s.salesIn)) +
-      tile("売上（税サ抜）", fmtYen(s.salesEx)) +
+      tile("お店の売上（税サ込）", fmtYen(s.salesIn)) +
+      tile("売上（税サ抜・BASE込）", fmtYen(s.salesEx)) +
+      (s.base ? tile("うちBASE（税サ抜）", fmtYen(s.base)) : "") +
       tile("会計件数／客数", s.count + "件／" + s.guests + "名") +
       tile("仕入れ", fmtYen(s.cost)) +
       tile("人件費（時給＋バック）", fmtYen(s.labor)) +
@@ -1735,8 +1765,9 @@
     var byMethod = {};
     completed.forEach(function(o){ byMethod[o.payment_method] = (byMethod[o.payment_method] || 0) + (o.total || 0); });
     renderTiles({
-      salesIn: completed.reduce(function(s, o){ return s + (o.total || 0); }, 0), salesEx: pr.daySales,
-      count: completed.length, guests: completed.reduce(function(s, o){ return s + (o.guests || 0); }, 0),
+      salesIn: completed.reduce(function(s, o){ return s + (isBaseOrder(o) ? 0 : (o.total || 0)); }, 0), salesEx: pr.daySales,
+      base: completed.reduce(function(s, o){ return s + (isBaseOrder(o) ? (o.subtotal || 0) : 0); }, 0),
+      count: completed.length, guests: completed.reduce(function(s, o){ return s + (isBaseOrder(o) ? 0 : (o.guests || 0)); }, 0),
       cost: dayData.purchases.reduce(function(s, p){ return s + p.amount; }, 0), labor: labor
     });
     renderRateCard(pr.daySales, pr.rate, pr.crossAt);
@@ -1800,7 +1831,7 @@
     purchases.forEach(function(p){ d(p.business_day).cost += p.amount; });
     att.forEach(function(a){ d(a.business_day).att.push(a); });
     var now = new Date();
-    var castSum = {}, unassigned = 0, totals = { salesIn: 0, salesEx: 0, count: 0, guests: 0, cost: 0, labor: 0 }, byMethod = {};
+    var castSum = {}, unassigned = 0, totals = { salesIn: 0, salesEx: 0, base: 0, count: 0, guests: 0, cost: 0, labor: 0 }, byMethod = {};
     var dayRows = [];
     Object.keys(days).sort().forEach(function(k){
       var dd = days[k];
@@ -1814,8 +1845,9 @@
         labor += row.total;
       });
       unassigned += pr.unassigned;
-      var salesIn = dd.orders.reduce(function(s, o){ return s + (o.total || 0); }, 0);
-      dd.orders.forEach(function(o){ byMethod[o.payment_method] = (byMethod[o.payment_method] || 0) + (o.total || 0); totals.guests += o.guests || 0; });
+      var salesIn = dd.orders.reduce(function(s, o){ return s + (isBaseOrder(o) ? 0 : (o.total || 0)); }, 0);
+      totals.base += dd.orders.reduce(function(s, o){ return s + (isBaseOrder(o) ? (o.subtotal || 0) : 0); }, 0);
+      dd.orders.forEach(function(o){ byMethod[o.payment_method] = (byMethod[o.payment_method] || 0) + (o.total || 0); totals.guests += isBaseOrder(o) ? 0 : (o.guests || 0); });
       totals.salesIn += salesIn; totals.salesEx += pr.daySales; totals.count += dd.orders.length; totals.cost += dd.cost; totals.labor += labor;
       dayRows.push({ day: k, salesIn: salesIn, salesEx: pr.daySales, count: dd.orders.length, rate: pr.rate, cost: dd.cost, labor: labor });
     });
