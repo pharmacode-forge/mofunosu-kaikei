@@ -337,6 +337,7 @@
   <main>
     <!-- 卓 -->
     <section class="screen active" id="screen-tables">
+      <div id="daySalesCard"></div>
       <h2 class="section-title">営業中のお客様</h2>
       <div class="grid-cards" id="activeTablesGrid"></div>
     </section>
@@ -363,6 +364,20 @@
         </div>
         <div id="castEditList"></div>
         <p class="hint" style="font-size:12px;color:var(--text-muted);margin:6px 2px 0">時給を変えると、<b>変えた日（今日の営業分）から</b>新しい時給で計算します。前の日の給与は前の時給のままです。</p>
+      </div>
+      <div data-admin>
+        <h2 class="section-title">合言葉を変える（管理者のみ）</h2>
+        <div class="add-form">
+          <select id="pinChangeRole">
+            <option value="admin">管理者の合言葉</option>
+            <option value="staff">スタッフの合言葉</option>
+          </select>
+          <input type="text" id="pinChangeOld" placeholder="今の管理者の合言葉" autocomplete="off" autocapitalize="off" spellcheck="false" style="-webkit-text-security: disc">
+          <input type="text" id="pinChangeNew" placeholder="新しい合言葉（4文字以上）" autocomplete="off" autocapitalize="off" spellcheck="false" style="-webkit-text-security: disc">
+          <input type="text" id="pinChangeNew2" placeholder="新しい合言葉（もう一度）" autocomplete="off" autocapitalize="off" spellcheck="false" style="-webkit-text-security: disc">
+          <button class="btn btn-primary btn-sm" id="pinChangeBtn">変える</button>
+        </div>
+        <p class="hint" style="font-size:12px;color:var(--text-muted);margin:6px 2px 0">新しい合言葉は、このお店の中だけで管理してください。開発者に知らせる必要はありません。スタッフの合言葉を変えたら、スタッフのスマホでは新しい合言葉で入り直しになります。</p>
       </div>
       <h2 class="section-title">ログイン中：<span id="roleLabel"></span></h2>
       <button class="btn btn-outline" id="logoutBtn">ログアウト（合言葉を入れ直す）</button>
@@ -968,7 +983,21 @@
   function amusementCount(o){
     return (o.items || []).reduce(function(s, it){ return s + (isAmusementItem(it) ? it.qty : 0); }, 0);
   }
+  // その営業日の会計済み売上（スタッフ・管理者とも見える。レジ金の計算用）
+  function renderDaySalesCard(){
+    var el = document.getElementById("daySalesCard");
+    if (!el) return;
+    var done = dayData.completed || [];
+    var salesIn = done.reduce(function(s, o){ return s + (o.total || 0); }, 0);
+    var salesEx = done.reduce(function(s, o){ return s + (o.subtotal || 0); }, 0);
+    var dayLbl = currentDay === todayStr() ? "今日" : currentDay.slice(5).replace("-", "/");
+    el.innerHTML = '<div class="stat-tiles" style="margin-bottom:12px">' +
+      tile(dayLbl + "の売上（税サ込）", fmtYen(salesIn)) +
+      tile(dayLbl + "の売上（税サ抜）", fmtYen(salesEx)) +
+      tile("会計済み", done.length + "件") + '</div>';
+  }
   function renderActiveTables(){
+    renderDaySalesCard();
     var grid = document.getElementById("activeTablesGrid");
     grid.innerHTML = "";
     var now = new Date();
@@ -1898,6 +1927,35 @@
     showConfirm("ログアウトして、合言葉の入力画面に戻りますか？", "ログアウト", function(){
       try { localStorage.removeItem(PIN_STORAGE_KEY); } catch (e) {}
       location.reload();
+    });
+  });
+  // 合言葉を変える（管理者のみ。DB側の mf_change_pin が今の管理者の合言葉を確かめる）
+  document.getElementById("pinChangeBtn").addEventListener("click", function(){
+    var targetRole = document.getElementById("pinChangeRole").value;
+    var oldPin = document.getElementById("pinChangeOld").value.normalize("NFKC").trim();
+    var newPin = document.getElementById("pinChangeNew").value.normalize("NFKC").trim();
+    var newPin2 = document.getElementById("pinChangeNew2").value.normalize("NFKC").trim();
+    if (!oldPin) { toast("今の管理者の合言葉を入れてください"); return; }
+    if (newPin.length < 4) { toast("新しい合言葉は4文字以上にしてください"); return; }
+    if (newPin !== newPin2) { toast("新しい合言葉が2回で違います"); return; }
+    var label = targetRole === "admin" ? "管理者" : "スタッフ";
+    showConfirm(label + "の合言葉を変えますか？", "変える", async function(){
+      var btn = document.getElementById("pinChangeBtn"); btn.disabled = true;
+      try {
+        var res = await sb.rpc("mf_change_pin", { p_role: targetRole, p_old_admin: oldPin, p_new: newPin });
+        if (res.error) { toast("変えられませんでした。ネット接続をご確認ください。"); return; }
+        var msg = { wrong_admin: "今の管理者の合言葉が違います", too_short: "新しい合言葉は4文字以上にしてください", same_as_other: "もう一方の合言葉と同じにはできません", bad_role: "変えられませんでした" }[res.data];
+        if (res.data !== "ok") { toast(msg || "変えられませんでした"); return; }
+        ["pinChangeOld", "pinChangeNew", "pinChangeNew2"].forEach(function(id){ document.getElementById(id).value = ""; });
+        if (targetRole === "admin") {
+          // この端末は新しい合言葉で入り直す
+          try { localStorage.setItem(PIN_STORAGE_KEY, newPin); } catch (e) {}
+          toast("管理者の合言葉を変えました。入り直します");
+          setTimeout(function(){ location.reload(); }, 1200);
+        } else {
+          toast("スタッフの合言葉を変えました");
+        }
+      } finally { btn.disabled = false; }
     });
   });
   lockSubmitBtn.addEventListener("click", function(){
