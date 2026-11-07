@@ -1221,9 +1221,12 @@
     if (autoBtn) autoBtn.addEventListener("click", function(){ updateOrder({ ext_count: null }); });
   }
 
+  var menuPickerBaseMode = false;   // 今のメニュー一覧がBASE用か
   function renderMenuPicker(){
     var el = document.getElementById("menuPicker");
     el.innerHTML = "";
+    var curOrder = findOrder(activeOrderId);
+    menuPickerBaseMode = !!(curOrder && isBaseOrder(curOrder));
     if (menu.length === 0) { el.innerHTML = '<div class="empty-state">メニューが未登録です</div>'; return; }
     var byCat = {}, catOrder = [];
     // BASE（通販）の注文ではBASEの商品だけ、お店の注文ではBASE以外の商品だけを出す
@@ -1274,6 +1277,8 @@
   function renderOrderSheet(){
     var o = findOrder(activeOrderId);
     if (!o) return;
+    // プランをBASEに切り替えた時（または戻した時）に、メニューの一覧を作り直す
+    if (isBaseOrder(o) !== menuPickerBaseMode) renderMenuPicker();
     renderPlanCard(o);
     var now = new Date();
     var p = planLines(o, now);
